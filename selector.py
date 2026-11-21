@@ -8,6 +8,7 @@ import builtins
 import gzip
 import io
 import json
+import marshal
 import os
 import re
 import sys
@@ -25,10 +26,17 @@ def log(*a):
 
 
 # ---------------------------------------------------------------- loading
-M = json.load(gzip.open(HERE / "maps" / "maps.json.gz", "rt"))
+def load_map(name):
+    binary = HERE / "cache" / name
+    if binary.is_file():
+        with binary.open("rb") as stream:
+            return marshal.loads(stream.read())
+    return json.load(gzip.open(HERE / "maps" / (name + ".json.gz")))
+
+M = load_map("maps")
 SETS = M["sets"]
 MAP_TESTS = M["tests"]
-SRC = json.load(gzip.open(HERE / "maps/sources.json.gz"))
+SRC = load_map("sources")
 
 TJ = json.loads((DATA / "tests.json").read_text("utf-8"))["tests"]
 NUM = {t["id"]: t["number"] for t in TJ}
@@ -52,8 +60,7 @@ UNMAPPED = ALL - {n for n in IX2NUM if n is not None}
 
 pool_map_path = HERE / "maps" / "pool.json.gz"
 if pool_map_path.is_file():
-    with gzip.open(pool_map_path, "rt") as stream:
-        POOL_MAP = json.load(stream)
+    POOL_MAP = load_map("pool")
 else:
     POOL_MAP = {"tests": [], "lines": {}, "attributes": {}}
 POOL_NUMBERS = [NUM.get(node_id) for node_id in POOL_MAP["tests"]]
@@ -154,7 +161,7 @@ def strip_doc(tree):
     return tree
 
 
-def equal_ast(left, right):
+def equal_ast(left, right, changed_line=None):
     """Compare Python syntax without materializing strings for both trees."""
     pending = [(left, right)]
     while pending:
@@ -164,6 +171,8 @@ def equal_ast(left, right):
         if type(a) is not type(b):
             return False
         if isinstance(a, ast.AST):
+            if changed_line and hasattr(a, "lineno") and (a.end_lineno < changed_line or a.lineno > changed_line) and a.lineno == b.lineno and a.end_lineno == b.end_lineno and a.col_offset == b.col_offset and a.end_col_offset == b.end_col_offset:
+                continue
             pending.extend((value, getattr(b, name)) for name, value in ast.iter_fields(a))
         elif isinstance(a, list):
             if len(a) != len(b):
@@ -275,8 +284,7 @@ def pool_attribute_readers(path, parents, names):
 
 @lru_cache(maxsize=1)
 def attribute_profile():
-    with gzip.open(HERE / "maps" / "observed-attributes.json.gz", "rt") as stream:
-        profile = json.load(stream)
+    profile = load_map("observed-attributes")
     return [NUM.get(test) for test in profile["tests"]], profile["slots"]
 
 
@@ -612,10 +620,14 @@ def references_enum(expr, enum_name):
     )
 
 
-BASE_NAMES, WRITE_PATHS = json.load(gzip.open(HERE / "maps/source-index.json.gz"))
+BASE_NAMES, WRITE_PATHS = load_map("source-index")
+FACTS = load_map("facts") if (HERE / "cache/facts").is_file() else {}
 
 def enum_attribute(field, enum_name):
     """Require every syntactically visible write to produce an enum member."""
+    key = (field, enum_name)
+    if key in FACTS.get("enum", {}):
+        return FACTS["enum"][key]
     pending = [field]
     examined = set()
     while pending:
@@ -873,18 +885,72 @@ def analyze_py_source(path, f, reasons, single_file):
         reasons.append("deleted")
         return set(ALL)
     new, removed, inserted = apply(old, f["hunks"])
+    if single_file and len(removed)==len(inserted)==1 and inserted[0] in (removed[0],removed[0]+1) and "fields" in FACTS and removed[0]>2:
+        line = removed[0]
+        records = FACTS["fields"].get(path,{}).get(line,())
+        if records:
+            original,updated = old.split("\n"),new.split("\n")
+            if original[:line-1]==updated[:line-1] and original[line:]==updated[line:]:
+                reason = indexed_certificate(path,line,original[line-1].removesuffix("\r"),updated[line-1].removesuffix("\r"),records)
+                if isinstance(reason,tuple):
+                    reason,selected = reason
+                    reasons.append(reason)
+                    return selected
+                if reason:
+                    reasons.append(reason)
+                    return tests_of(M["opens"].get(path))
     try:
         if changed_encoding(old, new):
             reasons.append("source-encoding")
             return set(ALL)
+        if "interior" in FACTS and "\x00" not in new:
+            original = old.split("\n")
+            edits = [line[1:] for hunk in f["hunks"] for line in hunk["lines"] if line[:1] in ("+","-")]
+            if edits and all((not body.strip(" \t\r") or body.lstrip(" \t").startswith("#")) and "\r" not in body.removesuffix("\r") for body in edits) and not set(removed).intersection(FACTS["multiline"].get(path,())) and not set(inserted).intersection(FACTS["interior"].get(path,())) and not any(0 < n <= len(original) and original[n-1].rstrip().endswith("\\") for near in removed+inserted for n in (near-1,near,near+1)):
+                reasons.append("comment-only")
+                return set()
+            if len(removed)==len(inserted)==1 and inserted[0] in (removed[0],removed[0]+1):
+                line=removed[0]
+                entry=FACTS["statements"].get(path,{}).get(line)
+                before,after=original[line-1].removesuffix("\r"),new.split("\n")[line-1].removesuffix("\r")
+                if entry and line not in FACTS["multiline"][path] and safe_boolean_edit(before,after):
+                    start,end,why=entry
+                    reasons.append(why)
+                    return cov_range(path,start,end)
         compile(new.encode("utf-8"), path, "exec", dont_inherit=True)
     except (SyntaxError, UnicodeError):
         reasons.append("syntax-error")
         return set(ALL)
+    if "statements" in FACTS:
+        original = old.splitlines()
+        if path in FACTS["multiline"] and all(line[1:].lstrip().startswith("#") or not line[1:].strip() for hunk in f["hunks"] for line in hunk["lines"] if line[:1] in ("+","-")):
+            touched = set(removed) | set(inserted)
+            if touched and not any(number in FACTS["multiline"][path] or (0 < number <= len(original) and original[number-1].rstrip().endswith("\\")) for near in touched for number in (near-1,near,near+1)):
+                reasons.append("comment-only")
+                return set()
+        if len(removed) == len(inserted) == 1 and inserted[0] in (removed[0],removed[0]+1):
+            line = removed[0]
+            statement = FACTS["statements"].get(path, {}).get(line)
+            before, after = original[line-1], new.splitlines()[line-1]
+            if statement and line not in FACTS["multiline"][path] and all(marker not in before for marker in (" is ", "version", "copy=", "lambda")) and before[:len(before)-len(before.lstrip())] == after[:len(after)-len(after.lstrip())] and simple_token_change(before, after):
+                start,end,why = statement
+                reasons.append(why)
+                return cov_range(path,start,end)
+    narrow = None
+    if len(removed) == len(inserted) == 1 and inserted[0] in (removed[0],removed[0]+1):
+        line = removed[0]
+        before,after = old.split("\n")[line-1],new.split("\n")[line-1]
+        if before[:len(before)-len(before.lstrip())] == after[:len(after)-len(after.lstrip())] and simple_token_change(before,after) and line not in FACTS.get("multiline",{}).get(path,()):
+            narrow = line
     old_tree, new_tree = source_tree(path), ast.parse(new)
-    if equal_ast(old_tree, new_tree):
+    if equal_ast(old_tree, new_tree, narrow):
         reasons.append("comment-only")
         return set()
+    if single_file and f["old"] == f["new"] and len(removed) == len(inserted) == 1:
+        certificate = certified_edit(path, old_tree, new_tree, removed[0])
+        if certificate:
+            reasons.append(certificate)
+            return tests_of(M["opens"].get(path))
     if single_file and f["old"] == f["new"] and equivalent_comparison(path, old, new_tree, removed, inserted):
         reasons.append("equivalent-by-source")
         return tests_of(M["opens"].get(path))
@@ -1036,7 +1102,7 @@ def test_file_tests(path, f, reasons):
 def pool_tests():
     """Recover test callers of pool dispatch helpers in the pinned test sources."""
     result = set()
-    for path in BY_FILE:
+    for path in SRC:
         source = SRC.get(path, "")
         if "ProcessPoolExecutor" not in source:
             continue
@@ -1060,18 +1126,19 @@ def pool_tests():
                     break
                 dispatched.update(found)
             for name in dispatched:
-                number = NUM.get(f"{path}::{cls.name}::{name}")
-                if number is not None:
-                    result.add(number)
+                result.add(f"{path}::{cls.name}::{name}")
     return result
 
 
-UNTRACED_POOL_TESTS = pool_tests().difference(POOL_NUMBERS)
+POOL_IDS = FACTS["pool"] if "pool" in FACTS else pool_tests()
+UNTRACED_POOL_TESTS = {NUM[node] for node in POOL_IDS if node in NUM}.difference(POOL_NUMBERS)
 
-EXTRA = {NUM[name]: entry for name, entry in json.load(gzip.open(HERE / "maps/extra-lines.json.gz")).items() if name in NUM}
+EXTRA = {NUM[name]: entry for name, entry in load_map("extra-lines").items() if name in NUM}
 
 def extra_tests(path, reasons):
-    if reasons == ["equivalent-by-source"]:
+    if reasons == ["key-value"]:
+        return set()
+    if reasons in (["equivalent-by-source"], ["unequal-tuple-shapes"], ["unused-factory"], ["unchanged-validation"], ["fresh-expression-copy"]):
         return (UNMAPPED - EXTRA.keys()) | {number for number, (raw, _) in EXTRA.items() if path in raw}
     if not reasons or not all(reason in {"stmt", "compound-header", "key-value"} or reason.startswith("module-level:") for reason in reasons):
         return UNMAPPED
@@ -1082,6 +1149,183 @@ def extra_tests(path, reasons):
 def key_profile():
     profile = json.load(gzip.open(HERE / "maps/literal-keys.json.gz"))
     return profile["data"], {NUM[test] for test in profile["tests"] if test in NUM}
+
+@lru_cache(maxsize=1)
+def profile():
+    data = load_map("order-shapes")
+    data["factory_sites"] = {json.loads(label)[0] for label in data["factories"]}
+    return data
+
+@lru_cache(maxsize=1)
+def same_catalog():
+    return sorted(NUM) == profile()["catalog"]
+
+def indexed_certificate(path,line,before,after,records):
+    if not same_catalog():
+        return None
+    data = profile()
+    for start,end,kind,detail in records:
+        prefix, suffix = before[:start], before[end:]
+        if not after.startswith(prefix) or not after.endswith(suffix) or len(after)<len(prefix)+len(suffix):
+            continue
+        old = before[start:end].strip(" \t")
+        new = after[start:len(after)-len(suffix)].strip(" \t")
+        if kind in ("key","class-int") and len(new)<=32 and re.fullmatch(r"[0-9][0-9a-fA-F_xXoObB]*",new) and old!=new:
+            try:
+                if type(ast.literal_eval(new)) is not int:
+                    continue
+            except (ValueError,SyntaxError):
+                continue
+            if kind=="key":
+                slot,key=detail
+                readers=key_readers(path,slot,[key])
+                if readers is not None:
+                    return "key-value",readers
+            else:
+                owner,field,lambdas=detail
+                parent=[ast.ClassDef(name=owner, bases=[],keywords=[],body=[],decorator_list=[],type_params=[])]
+                readers=tests_of(M["names"].get(field))
+                for lo,hi in lambdas:
+                    readers.update(cov_range(path,lo,hi))
+                module_users=users(path)
+                if module_users:
+                    readers &= module_users
+                readers.update(observed_attribute_tests(path,parent,{field}))
+                readers.update(pool_attribute_readers(path,parent,{field}))
+                return "module-level:"+field,readers
+        if kind in ("enum","identity") and (old,new) in (("is","=="),("is not","!=")) and (kind=="identity" or FACTS["enum"].get(detail)):
+            return "equivalent-by-source"
+        if path in data["source_reads"] or line in data["code_reads"].get(path,()):
+            continue
+        if kind=="order" and {old,new} in ({"<","<="},{">",">="}) and FACTS["version"] and data["sites"].get(detail)==[["unequal","length"]]:
+            return "unequal-tuple-shapes"
+        if {old,new} != {"True","False"}:
+            continue
+        if kind=="owned" and data["arguments"].get(detail):
+            return "fresh-expression-copy"
+        if kind=="required":
+            owner,key=detail
+            if owner in data["missing"] and owner not in data["opaque"] and key not in data["missing"][owner]:
+                return "unchanged-validation"
+        if kind=="factory":
+            site,arguments=detail
+            if site in data["factory_sites"] and json.dumps([site,None,None]) not in data["factories"] and arguments not in data["factories"]:
+                return "unused-factory"
+
+def only_field(first, second, old, new, field):
+    previous = getattr(new, field)
+    setattr(new, field, getattr(old, field))
+    try:
+        return equal_ast(first, second)
+    finally:
+        setattr(new, field, previous)
+
+@lru_cache(maxsize=1)
+def fixed_dialect_versions():
+    if "version" in FACTS:
+        return FACTS["version"]
+    definition = "sqlglot/dialects/dialect.py"
+    writes = []
+    for file in WRITE_PATHS.get("version", ()):
+        for node in ast.walk(source_tree(file)):
+            if isinstance(node, ast.Attribute) and node.attr == "version" and isinstance(node.ctx, (ast.Del, ast.Store)):
+                writes.append(file)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"setattr", "delattr"} and any(isinstance(arg, ast.Constant) and arg.value == "version" for arg in node.args):
+                return False
+    pattern = 'parts = str(kwargs.pop("version", sys.maxsize)).split(".")\nparts.extend(["0"] * (3 - len(parts)))\nself.version = tuple(int(p) for p in parts[:3])'
+    required = ast.parse(pattern).body
+    return writes == [definition] and any(isinstance(cls, ast.ClassDef) and cls.name == "Dialect" and any(isinstance(fn, ast.FunctionDef) and fn.name == "__init__" and equal_ast(fn.body[:3], required) for fn in cls.body) for cls in source_tree(definition).body)
+
+def factory_arguments(call):
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+        return None
+    if any(not isinstance(value, ast.Constant) or type(value.value) not in (str, bool, int, type(None)) for value in [*call.args, *(kw.value for kw in call.keywords)]) or any(kw.arg is None for kw in call.keywords):
+        return None
+    return [item.value for item in call.args], {kw.arg: kw.value.value for kw in call.keywords}
+
+@lru_cache(maxsize=None)
+def pure_factory(path, name):
+    tree = source_tree(path)
+    definition = path
+    for item in tree.body:
+        if isinstance(item, ast.ImportFrom) and any((alias.asname or alias.name) == name for alias in item.names):
+            mod = from_module(path, item)
+            definition = module_path(mod) if mod else None
+            if not definition:
+                return None
+            break
+    for fn in source_tree(definition).body:
+        if not isinstance(fn, ast.FunctionDef) or fn.name != name or fn.decorator_list or not fn.args.vararg or not fn.args.kwarg or fn.args.args or fn.args.kwonlyargs or len(fn.body) != 2:
+            continue
+        inner, ret = fn.body
+        if not isinstance(inner, ast.FunctionDef) or inner.decorator_list or len(inner.body) != 1 or not isinstance(ret, ast.Return) or not isinstance(ret.value, ast.Name) or ret.value.id != inner.name:
+            continue
+        if inner.args.defaults or inner.args.kw_defaults or not isinstance(inner.body[0], ast.Return):
+            continue
+        return definition + ":" + name
+
+def certified_edit(path, first, second, line):
+    if not same_catalog():
+        return None
+    data = profile()
+    if path in data["source_reads"] or line in data["code_reads"].get(path, ()):
+        return None
+    original_line = SRC[path].splitlines()[line - 1]
+    if "copy=" in original_line and "from sqlglot import expressions as exp" in SRC[path]:
+        for old,new in zip(ast.walk(first),ast.walk(second)):
+            if not isinstance(old,ast.Call) or not isinstance(new,ast.Call) or old.lineno != line or len(old.args) != 1 or not isinstance(old.args[0],ast.Call):
+                continue
+            if ast.unparse(old.func) != "exp.alias_" or ast.unparse(old.args[0].func) != "exp.table_" or len(old.args[0].args) != 1 or old.args[0].keywords:
+                continue
+            if {kw.arg for kw in old.keywords} != {"alias","copy"} or len(old.keywords) != 2 or len(new.keywords) != 2:
+                continue
+            site = f"{path}:{line}:{old.col_offset}"
+            if not data.get("arguments",{}).get(site):
+                continue
+            before = next(kw.value for kw in old.keywords if kw.arg == "copy")
+            after = next((kw.value for kw in new.keywords if kw.arg == "copy"), None)
+            if isinstance(before,ast.Constant) and isinstance(after,ast.Constant) and type(before.value) is bool and type(after.value) is bool and before.value != after.value and only_field(first,second,before,after,"value"):
+                return "fresh-expression-copy"
+    for old, new in zip(ast.walk(first), ast.walk(second)) if "version" in SRC[path].splitlines()[line - 1] else ():
+        if getattr(old, "lineno", None) != line or type(old) is not type(new):
+            continue
+        if isinstance(old, ast.Compare) and len(old.ops) == len(new.ops) == 1 and isinstance(old.left, ast.Attribute) and old.left.attr == "version" and self_field(old.left.value, "dialect") and isinstance(old.comparators[0], ast.Tuple) and len(old.comparators[0].elts) != 3:
+            pair = {type(old.ops[0]), type(new.ops[0])}
+            if pair not in ({ast.Lt, ast.LtE}, {ast.Gt, ast.GtE}):
+                continue
+            site = f"{path}:{line}:{old.col_offset}"
+            if data["sites"].get(site) == [["unequal","length"]] and fixed_dialect_versions() and only_field(first, second, old, new, "ops"):
+                return "unequal-tuple-shapes"
+    if not path.startswith(("sqlglot/expressions/", "sqlglot/parsers/")):
+        return None
+    for cls, target in zip(first.body, second.body):
+        if not isinstance(cls, ast.ClassDef) or not isinstance(target, ast.ClassDef) or not (cls.lineno <= line <= cls.end_lineno):
+            continue
+        for stmt, peer in zip(cls.body, target.body):
+            if not (isinstance(stmt, ast.Assign) and isinstance(peer, ast.Assign) and stmt.lineno <= line <= stmt.end_lineno and isinstance(stmt.value, ast.Dict) and isinstance(peer.value, ast.Dict) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)):
+                continue
+            field = stmt.targets[0].id
+            for key, old, new in zip(stmt.value.keys, stmt.value.values, peer.value.values):
+                if not isinstance(key, ast.Constant) or type(key.value) is not str or old.lineno != line or type(old) is not type(new):
+                    continue
+                if field == "arg_types" and isinstance(old, ast.Constant) and type(old.value) is bool and type(new.value) is bool and old.value != new.value:
+                    owner = path[:-3].replace("/", ".") + ":" + cls.name
+                    if not path.startswith("sqlglot/expressions/") or cls.decorator_list or cls.name in BASE_NAMES or len(cls.bases) != 1 or not isinstance(cls.bases[0], ast.Name) or cls.bases[0].id != "Expression" or len(cls.body) != 1:
+                        continue
+                    if owner not in data["missing"] or owner in data["opaque"] or key.value in data["missing"][owner]:
+                        continue
+                    if only_field(first, second, old, new, "value"):
+                        return "unchanged-validation"
+                if field == "SHOW_PARSERS" and path.startswith("sqlglot/parsers/") and isinstance(old, ast.Call):
+                    args = factory_arguments(old)
+                    if not args or not factory_arguments(new) or not equal_ast(old.func, new.func):
+                        continue
+                    site = pure_factory(path, old.func.id)
+                    if site is None or site not in data["factory_sites"] or json.dumps([site,None,None]) in data["factories"] or json.dumps([site,*args], sort_keys=True) in data["factories"]:
+                        continue
+                    if equal_ast(old.args, new.args) and [(kw.arg,type(kw.value.value)) for kw in old.keywords] == [(kw.arg,type(kw.value.value)) for kw in new.keywords] and only_field(first, second, old, new, "keywords"):
+                        return "unused-factory"
+    return None
 
 def value_readers(path, old_tree, new_tree, removed):
     if len(removed) != 1:
@@ -1112,11 +1356,80 @@ def value_readers(path, old_tree, new_tree, removed):
             return None
     finally:
         second[1].value = changed
+    slot = path[:-3].replace("/", ".") + ":" + first[0] + ":NUMERIC_ESCAPES"
+    return key_readers(path,slot,keys)
+
+def key_readers(path,slot,keys):
     profile, known = key_profile()
-    accesses = profile.get(path[:-3].replace("/", ".") + ":" + first[0] + ":NUMERIC_ESCAPES")
+    accesses = profile.get(slot)
     if accesses is None or "" in accesses:
         return None
-    return (ALL - known - UNMAPPED) | {NUM[test.partition("[")[0]] for test, reads in accesses.items() if test.partition("[")[0] in NUM and (None in reads or set(keys).intersection(reads))}
+    extra = isolated_calls()
+    selected = {number for number in UNMAPPED if number not in extra or path in extra[number][0] or path in EXTRA.get(number,[[],{}])[0] or set(extra[number][2].get(slot, ())).intersection(["*", *keys])}
+    return selected | (ALL - known - UNMAPPED) | {NUM[test.partition("[")[0]] for test, reads in accesses.items() if test.partition("[")[0] in NUM and (None in reads or set(keys).intersection(reads))}
+
+@lru_cache(maxsize=1)
+def isolated_calls():
+    return {NUM[node]: info for node, info in load_map("extra-calls").items() if node in NUM}
+
+def local_function_readers(path, patch, selected):
+    updated, removed, inserted = apply(SRC[path], patch["hunks"])
+    if len(removed) != 1 or len(inserted) != 1:
+        return selected
+    line = removed[0]
+    old_lines, new_lines = SRC[path].splitlines(), updated.splitlines()
+    if len(old_lines) != len(new_lines) or not simple_token_change(old_lines[line-1], new_lines[line-1]):
+        return selected
+    owner = containing_function(path, line)
+    if owner is None:
+        return selected
+    profile_data = profile()
+    if path in profile_data["source_reads"] or line in profile_data["code_reads"].get(path, ()):
+        return selected
+    details = isolated_calls()
+    return {number for number in selected if number not in details or path in details[number][0] or path in EXTRA[number][0] or owner in details[number][1].get(path, ()) or owner in details[number][3].get(path, ())}
+
+def simple_token_change(left, right):
+    try:
+        a, b = [[(t.type,t.string) for t in tokenize.generate_tokens(io.StringIO(text.strip()).readline)] for text in (left,right)]
+    except (tokenize.TokenError, IndentationError):
+        return False
+    if len(a) != len(b):
+        longer, shorter = (a,b) if len(a)>len(b) else (b,a)
+        return len(longer)==len(shorter)+1 and any(token == (tokenize.NAME,"not") and longer[:index]+longer[index+1:] == shorter for index,token in enumerate(longer))
+    diff = [(x,y) for x,y in zip(a,b) if x != y]
+    if len(diff) != 1:
+        return False
+    (x,u),(y,v) = diff[0]
+    return x == y and (x in (tokenize.NUMBER, tokenize.STRING) or {u,v} <= {"True","False"} or {u,v} <= {"<",">","<=",">=","==","!="} or {u,v} <= {"and","or"})
+
+def safe_boolean_edit(before,after):
+    for match in re.finditer(r"\b(?:True|False|and|or|not)\b|<=|>=|!=|==|<|>",before):
+        replacements = {"True":("False",),"False":("True",),"and":("or",),"or":("and",),"not":("",),"==":("!=",),"!=":("==",),"<":("<=",">"),">":(">=","<"),"<=":("<",">="),">=":(">","<=")}
+        for value in replacements[match[0]]:
+            end=match.end() + int(not value and before[match.end():].startswith(" "))
+            if after==before[:match.start()]+value+before[end:] and simple_token_change(before,after):
+                return True
+    return False
+
+@lru_cache(maxsize=256)
+def containing_function(path, line):
+    if "functions" in FACTS:
+        return next((name for start, end, name in FACTS["functions"].get(path, ()) if start <= line <= end), None)
+    return next((name for start, end, name in function_spans(source_tree(path)) if start <= line <= end), None)
+
+def function_spans(tree):
+    result = []
+    def walk(body, prefix):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                walk(node.body, prefix + node.name + ".")
+            elif isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                if node.body and len(node.body) > 0:
+                    result.append((node.body[0].lineno, node.end_lineno, prefix + node.name))
+                walk(node.body, prefix + node.name + ".<locals>.")
+    walk(tree.body, "")
+    return sorted(result, key=lambda span: span[1]-span[0])
 
 
 def analyze(text):
@@ -1132,7 +1445,10 @@ def analyze(text):
             got = analyze_py_source(path, f, file_reasons, len(files) == 1)
             reasons.extend(file_reasons)
             if file_reasons != ["comment-only"]:
-                got |= UNTRACED_POOL_TESTS | extra_tests(path, file_reasons)
+                extra = extra_tests(path, file_reasons)
+                if len(files) == 1 and extra and all(reason in {"stmt", "compound-header"} for reason in file_reasons):
+                    extra = local_function_readers(path, f, extra)
+                got |= UNTRACED_POOL_TESTS | extra
             sel |= got
             if path.startswith("sqlglot/typing/") and "comment-only" not in file_reasons:
                 sel |= set(BY_FILE.get("tests/test_typing.py", []))
