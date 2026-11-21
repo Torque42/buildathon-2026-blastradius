@@ -2,6 +2,7 @@
 import ast
 import gzip
 import json
+import marshal
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -61,6 +62,11 @@ def construction_names(selector):
 def raw_or_construction_read(selector,name):
     return name in construction_names(selector)
 
+@lru_cache(1)
+def indexed():
+    path=Path(__file__).parent/"cache"/"flag-slots"
+    return marshal.loads(path.read_bytes()) if path.is_file() else None
+
 def refine(selector,text,selected):
     files=selector.parse_patch(text)
     if len(files)!=1:return selected
@@ -74,7 +80,8 @@ def refine(selector,text,selected):
     before=src.splitlines();after=new.splitlines()
     if before[:line-1]!=after[:line-1] or before[line:]!=after[line:]:return selected
     if not re.match(r"^    [A-Z][A-Z_0-9]*\s*[:=]",before[line-1]):return selected
-    slot=source_slots(selector,path).get(line)
+    facts=indexed()
+    slot=facts.get(path,{}).get(line) if facts is not None else source_slots(selector,path).get(line)
     if not slot:return selected
     name,owner,start,end,original_type=slot
     a,b=before[line-1],after[line-1]
@@ -83,7 +90,7 @@ def refine(selector,text,selected):
     try:expr=ast.parse(b[start:right],mode="eval")
     except SyntaxError:return selected
     v=scalar(expr.body)
-    if v is None or v[0]!=original_type:return selected
+    if v is None or v[0].__name__!=(original_type if isinstance(original_type,str) else original_type.__name__):return selected
     catalog,sites,readers=observations();site=f"{path}:{owner}:{name}"
     if site not in sites or set(selector.NUM)!=catalog:return selected
     ids=readers.get(site,())

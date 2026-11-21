@@ -7,6 +7,7 @@ import marshal
 import lzma
 import importlib
 import pickle
+import signal
 import subprocess
 import sys
 import time
@@ -16,20 +17,27 @@ HERE=Path(__file__).resolve().parent
 MAPS=HERE/"maps"
 IDS={kind:"tests/test_executor.py::TestExecutor::test_execute_"+kind for kind in ("tpcds","tpch")}
 
+def read_map(name):
+    cached=HERE/"cache"/name
+    return marshal.loads(cached.read_bytes() if cached.is_file() else gzip.decompress((MAPS/(name+".gz")).read_bytes()))
+
 @lru_cache(1)
 def profile():
-    return marshal.loads(gzip.decompress((MAPS/"query-traces.gz").read_bytes()))
+    return read_map("query-traces")
 
 def refine(selector,text,selected):
     from replay_edit import possible_edit
+    edit=possible_edit(selector,text)
+    return refine_edits(selector,[edit],selected) if edit else selected
+
+
+def refine_edits(selector,edits,selected):
     choices={k:selector.NUM[n] for k,n in IDS.items() if n in selector.NUM and selector.NUM[n] in selected}
     if not choices:return selected
-    edit=possible_edit(selector,text)
-    if not edit:return selected
-    path,new,mask=edit
-    if path in {"sqlglot/optimizer/optimizer.py","sqlglot/serde.py","sqlglot/executor/__init__.py"}:return selected
     init,sets,data=profile()
-    if path in init and sets[init[path]]&mask:return selected
+    for path,new,mask in edits:
+        if path in {"sqlglot/optimizer/optimizer.py","sqlglot/serde.py","sqlglot/executor/__init__.py"}:return selected
+        if path in init and sets[init[path]]&mask:return selected
     # Check the time that would actually disappear from the worker schedule.
     possible=(selector.worker_cost(selector.split(selected))-selector.worker_cost(selector.split(selected-set(choices.values()))))/1000
     if possible<0.8:return selected
@@ -38,7 +46,7 @@ def refine(selector,text,selected):
         work=[]
         for i,case in enumerate(data[key]):
             stages=[stage for stage in ("parse","prepare","optimize","finish","plan","execute_plan","reference")
-                    if path in case.get(stage,{}) and sets[case[stage][path]]&mask]
+                    if any(path in case.get(stage,{}) and sets[case[stage][path]]&mask for path,new,mask in edits)]
             if stages:work.append((i,stages))
         queries[key]=work
     safe={choices[key] for key,work in queries.items() if not work}
@@ -46,7 +54,7 @@ def refine(selector,text,selected):
     if needed:
         budget=min(5.0,possible*0.42)
         try:
-            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([path,new,needed,budget,hex(mask)]).encode(),capture_output=True,timeout=budget*2+1)
+            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([[(path,new,hex(mask)) for path,new,mask in edits],needed,budget]).encode(),capture_output=True,timeout=budget*2+1)
             output=result.stdout
         except subprocess.TimeoutExpired as exc:
             output=exc.stdout or b""
@@ -55,7 +63,8 @@ def refine(selector,text,selected):
 
 
 def restore(label):
-    return pickle.loads(gzip.decompress((MAPS/"query-inputs"/(label+".gz")).read_bytes()))
+    cached=HERE/"cache"/"query-inputs"/label
+    return pickle.loads(cached.read_bytes() if cached.is_file() else gzip.decompress((MAPS/"query-inputs"/(label+".gz")).read_bytes()))
 
 
 @lru_cache(2)
@@ -65,9 +74,22 @@ def tables(kind):
     return schema,{name:Table(cols,values) for name,(cols,values) in rows.items()}
 
 
+@lru_cache(2)
+def schema_for(kind):
+    cached=HERE/"cache"/kind/"schema"
+    return pickle.loads(cached.read_bytes()) if cached.is_file() else tables(kind)[0]
+
+@lru_cache(64)
+def table_for(kind,name):
+    from sqlglot.executor.table import Table
+    if not name.replace("_","").isalnum():raise KeyError(name)
+    cached=HERE/"cache"/kind/("table-"+name)
+    if cached.is_file():return Table(*pickle.loads(cached.read_bytes()))
+    return tables(kind)[1][name]
+
 @lru_cache(1)
 def rule_index():
-    return marshal.loads(gzip.decompress((MAPS/"query-rule-index.gz").read_bytes()))
+    return read_map("query-rule-index")
 
 @lru_cache(10)
 def rule_block(start,size):
@@ -75,21 +97,22 @@ def rule_block(start,size):
         stream.seek(start)
         return marshal.loads(lzma.decompress(stream.read(size)))
 
-def replay_rules(case,path,mask):
+def replay_rules(case,edits):
     from replay_state import digest
     _,bits,_=profile()
     changed=None
     for key,expected,coverage in case["rules"]:
-        if changed is None and (path not in coverage or not bits[coverage[path]]&mask):
+        if changed is None and not any(path in coverage and bits[coverage[path]]&mask for path,_,mask in edits):
             continue
         start,size,i=rule_index()[key]
-        module,name,pristine,kwargs=pickle.loads(rule_block(start,size)[i])
+        cached=HERE/"cache"/"rules"/f"{start}-{i}"
+        module,name,pristine,kwargs=pickle.loads(cached.read_bytes() if cached.is_file() else rule_block(start,size)[i])
         fn=getattr(importlib.import_module(module),name)
         result=fn(pristine if changed is None else changed,**kwargs)
         changed=None if digest(result,())==expected else result
     return changed
 
-def verify_query(kind,case,stages,path,mask):
+def verify_query(kind,case,stages,edits):
     from sqlglot import parse_one,transpile,find_tables
     from sqlglot import executor
     from sqlglot.optimizer import optimize
@@ -114,12 +137,12 @@ def verify_query(kind,case,stages,path,mask):
     if opt_required and not prepare:
         _,bits,_=profile()
         outer=case.get("outer",{})
-        if not parse_changed and path.startswith("sqlglot/optimizer/") and "rules" in case and not (path in outer and bits[outer[path]]&mask):
-            optimized=replay_rules(case,path,mask)
+        if not parse_changed and all(path.startswith("sqlglot/optimizer/") or not any(path in case.get(st,{}) and bits[case[st][path]]&mask for st in ("optimize",)) for path,_,mask in edits) and "rules" in case and not any(path in outer and bits[outer[path]]&mask for path,_,mask in edits):
+            optimized=replay_rules(case,edits)
             downstream|=optimized is not None
         else:
             if expr is None:expr=restore(case["parse_input"])
-            schema,_=tables(kind)
+            schema=schema_for(kind)
             optimized=optimize(expr,ensure_schema(schema),leave_tables_isolated=True,dialect=None)
             downstream|=digest(optimized,())!=case["optimized"]
     if not downstream and not prepare:
@@ -129,8 +152,8 @@ def verify_query(kind,case,stages,path,mask):
             optimized.sql(pretty=True)
         return True
     if expr is None:expr=restore(case["parse_input"])
-    schema,all_tables=tables(kind)
-    chosen={t.name:all_tables[t.name] for t in find_tables(expr)}
+    schema=schema_for(kind)
+    chosen={t.name:table_for(kind,t.name) for t in find_tables(expr)}
     original=executor.optimize
     if not prepare:
         if optimized is None:optimized=restore(case["optimized_input"])
@@ -144,19 +167,21 @@ def verify_query(kind,case,stages,path,mask):
 
 
 def run():
-    path,new,work,budget,mask=json.load(sys.stdin)
-    mask=int(mask,16)
+    encoded,work,budget=json.load(sys.stdin)
+    edits=[(path,new,int(mask,16)) for path,new,mask in encoded]
     root=HERE/"cache"/"pinned"
     sys.path[:0]=[str(HERE),str(root)]
     from replay_edit import Overlay
-    sys.meta_path.insert(0,Overlay(path,new,root))
+    for path,new,mask in edits:sys.meta_path.insert(0,Overlay(path,new,root))
     _,_,data=profile()
+    signal.signal(signal.SIGPROF,lambda *_:sys.exit(0))
+    signal.setitimer(signal.ITIMER_PROF,budget)
     end=time.process_time()+budget
     for kind,rows in work.items():
         for i,stages in rows:
             if time.process_time()>end:return
             try:
-                if not verify_query(kind,data[kind][i],stages,path,mask):break
+                if not verify_query(kind,data[kind][i],stages,edits):break
             except Exception:
                 break
         else:

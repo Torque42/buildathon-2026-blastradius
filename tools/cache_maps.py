@@ -131,3 +131,9 @@ for path, source in selector.SRC.items():
                 queries.add((field.attr, enum.value.id))
 with (cache / "facts").open("wb") as stream:
     marshal.dump({"dispatch_spans":callbacks,"test_importers": selector.test_module_imports(), "pool": selector.POOL_IDS, "fields":fields, "functions":functions, "statements":statements, "multiline":comments, "interior":interiors, "version": selector.fixed_dialect_versions(), "enum": {pair: selector.enum_attribute(*pair) for pair in queries}}, stream)
+
+# Dynamic class-setting lookup and source guards depend only on the pin.
+import flag_readers
+flag_slots={path:flag_readers.source_slots(selector,path) for path in selector.SRC if path.startswith(("sqlglot/dialects/","sqlglot/parsers/","sqlglot/generators/")) and path.endswith(".py")}
+with (cache/"flag-slots").open("wb") as stream:
+    marshal.dump({p:{l:(*v[:-1],v[-1].__name__) for l,v in rows.items()} for p,rows in flag_slots.items()},stream)
