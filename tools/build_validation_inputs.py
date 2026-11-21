@@ -13,7 +13,7 @@ repo=base.parent
 source,manifest=map(lambda p:Path(p).resolve(),sys.argv[1:])
 pool=json.loads(gzip.decompress((repo/"maps/pool.json.gz").read_bytes()))["tests"]
 expected={t["id"] for t in json.loads(manifest.read_bytes())["tests"]}
-env=dict(os.environ,PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ["PATH"],PYTHONPATH=os.pathsep.join(map(str,[base/"validation_trace",source])),SKIP_INTEGRATION="0",PYTHON_CPU_COUNT="2",OPENBLAS_NUM_THREADS="1")
+env=dict(os.environ,BR_ROOT=str(source),PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ["PATH"],PYTHONPATH=os.pathsep.join(map(str,[base/"validation_trace",source])),SKIP_INTEGRATION="0",PYTHON_CPU_COUNT="2",OPENBLAS_NUM_THREADS="1")
 readers={}; sites=set();passed=set()
 def run(item):
     with tempfile.TemporaryDirectory(prefix="br-callbacks-") as tmp:

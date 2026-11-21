@@ -72,9 +72,17 @@ def refine(selector, text, selected):
             return set(selector.ALL)
         keep = set(selector.tests_of(selector.M["opens"].get(path)))
         for hit in hits:
-            if hit.startswith("scope:"):
+            if hit.startswith("import:"):
+                from isolated_imports import readers
+                keep.update(readers(selector,hit[7:]))
+            elif hit.startswith("test-import:"):
+                file=hit[12:]
+                if file not in selector.BY_FILE:return set(selector.ALL)
+                keep.update(selector.BY_FILE[file])
+                keep.update(selector.dependent_test_numbers(file))
+            elif hit.startswith("scope:"):
                 file=hit[6:]
-                if file not in selector.BY_FILE:return selected
+                if file not in selector.BY_FILE:return set(selector.ALL)
                 keep.update(selector.BY_FILE[file])
             elif hit in selector.NUM:
                 keep.add(selector.NUM[hit])

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 active=os.environ.get("BR_FLAG_TEST","")
-depth=0
+imports=[]
 events={}
 sites=set()
 owners={}
@@ -28,7 +28,12 @@ def owner(obj):
     return result
 
 def mark(site,key):
-    if site:events.setdefault(site,{}).setdefault(key,set()).add("" if depth else active)
+    if not site:return
+    context=active
+    if imports:
+        rel=imports[-1]
+        context="import:"+rel if rel.startswith("sqlglot/") else "test-import:"+rel if rel.startswith("tests/") else ""
+    events.setdefault(site,{}).setdefault(key,set()).add(context)
 
 def view(obj,attr,mode):
     val=getattr(obj,attr)
@@ -77,10 +82,12 @@ class Finder(importlib.abc.MetaPathFinder):
 
 class Loader(importlib.machinery.SourceFileLoader):
     def exec_module(self,module):
-        global depth
-        depth+=1
+        filename=Path(self.path)
+        try:rel=str(filename.relative_to(Path(os.environ["BR_ROOT"])))
+        except ValueError:rel=""
+        imports.append(rel)
         try:return super().exec_module(module)
-        finally:depth-=1
+        finally:imports.pop()
 
     def get_code(self,name):
         tree=ast.parse(self.get_data(self.path),filename=self.path)
