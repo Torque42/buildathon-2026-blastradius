@@ -364,6 +364,17 @@ def added_lines(hunks):
     return changed
 
 
+def changed_encoding(old, new):
+    """A coding cookie changes how Python interprets the source bytes on import."""
+    old_header = old.split("\n", 2)[:2]
+    new_header = new.split("\n", 2)[:2]
+    if old_header == new_header:
+        return False
+    def encoding(lines):
+        return tokenize.detect_encoding(io.BytesIO(("\n".join(lines) + "\n").encode()).readline)[0]
+    return encoding(old_header) != encoding(new_header)
+
+
 def eager_failure(tree, changed):
     """Detect direct import-time errors introduced into an eager expression."""
     if not changed:
@@ -402,6 +413,10 @@ def eager_failure(tree, changed):
             continue
         if hasattr(expr, "lineno") and not any(expr.lineno <= line <= expr.end_lineno for line in changed):
             continue
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Div, ast.FloorDiv, ast.Mod)):
+            if isinstance(expr.right, ast.Constant) and isinstance(expr.right.value, (int, float, complex)):
+                if expr.right.value == 0:
+                    return True
         if isinstance(expr, ast.Name) and isinstance(expr.ctx, ast.Load):
             if expr.lineno in changed:
                 loads.add(expr.id)
@@ -849,13 +864,16 @@ def analyze_py_source(path, f, reasons, single_file):
         return set(ALL)
     if f["new"] is None:
         reasons.append("deleted")
-        return importers_all(path)
+        return set(ALL)
     new, removed, inserted = apply(old, f["hunks"])
     try:
-        compile(new, path, "exec", dont_inherit=True)
-    except SyntaxError:
+        if changed_encoding(old, new):
+            reasons.append("source-encoding")
+            return set(ALL)
+        compile(new.encode("utf-8"), path, "exec", dont_inherit=True)
+    except (SyntaxError, UnicodeError):
         reasons.append("syntax-error")
-        return importers_all(path)
+        return set(ALL)
     old_tree, new_tree = source_tree(path), ast.parse(new)
     if equal_ast(old_tree, new_tree):
         if new.split("\n")[:2] != old.split("\n")[:2]:
@@ -965,8 +983,11 @@ def test_file_tests(path, f, reasons):
         return in_file if path != "tests/helpers.py" else set(ALL)
     new, removed, inserted = apply(old, f["hunks"])
     try:
-        compile(new, path, "exec", dont_inherit=True)
-    except SyntaxError:
+        if changed_encoding(old, new):
+            reasons.append("testfile-encoding")
+            return set(ALL)
+        compile(new.encode("utf-8"), path, "exec", dont_inherit=True)
+    except (SyntaxError, UnicodeError):
         reasons.append("testfile-syntax")
         return set(ALL) if path in ("tests/helpers.py", "tests/__init__.py") else in_file
     if same_ast(old, new):
