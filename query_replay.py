@@ -27,14 +27,17 @@ def read_map(name):
 def profile():
     return read_map("query-traces")
 
-def refine(selector,text,selected):
+def replay_budget(worker_saving):
+    return min(12.0, worker_saving * 0.68)
+
+def refine(selector,text,selected,skip=()):
     from replay_edit import possible_edit
     edit=possible_edit(selector,text)
-    return refine_edits(selector,[edit],selected) if edit else selected
+    return refine_edits(selector,[edit],selected,skip=skip) if edit else selected
 
 
-def refine_edits(selector,edits,selected,forbidden=()):
-    choices={k:selector.NUM[n] for k,n in IDS.items() if n in selector.NUM and selector.NUM[n] in selected}
+def refine_edits(selector,edits,selected,forbidden=(),skip=()):
+    choices={k:selector.NUM[n] for k,n in IDS.items() if n in selector.NUM and selector.NUM[n] in selected and selector.NUM[n] not in skip}
     if not choices:return selected
     init,sets,data=profile()
     for path,new,mask in edits:
@@ -54,7 +57,7 @@ def refine_edits(selector,edits,selected,forbidden=()):
     safe={choices[key] for key,work in queries.items() if not work}
     needed={key:work for key,work in queries.items() if work}
     if needed:
-        budget=min(5.0,possible*0.42)
+        budget=replay_budget(possible)
         safe.update(choices[k] for k in run_checks(edits, needed, budget, forbidden))
     return selected-safe
 

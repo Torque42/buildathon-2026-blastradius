@@ -1829,8 +1829,10 @@ def select_tests(text):
         sel=constructor_inputs.refine(selector,text,sel)
     if combined is None and "recursive-comparison" not in reasons:
         retained = replay_edit.preserve(selector, text, sel)
-        precise = query_phases.refine(selector, text, sel)
-        sel = query_replay.refine(selector, text, sel if precise is None else precise) | retained
+        attempted = set()
+        precise = query_phases.refine(selector, text, sel, attempted=attempted)
+        sel = query_replay.refine(selector, text, sel if precise is None else precise,
+                                  skip=attempted) | retained
     return import_impact.include(selector, text, sel), reasons
 
 

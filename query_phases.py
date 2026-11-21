@@ -74,7 +74,7 @@ def analyze(selector,text):
         inspect_mask = hit[2]
     return path, after, details, inspect_mask
 
-def refine(selector,text,selected,forbidden=()):
+def refine(selector,text,selected,forbidden=(),attempted=None):
     ids = {k:selector.NUM[name] for k,name in query_replay.IDS.items() if selector.NUM.get(name) in selected}
     if not ids:
         return None
@@ -157,6 +157,9 @@ def refine(selector,text,selected,forbidden=()):
                     selector.worker_cost(selector.split(selected-safe-{ids[k] for k in pending})))/1000
         if possible >= 0.8:
             line_mask = inspect_mask
-            verdict = query_replay.run_checks([(path,source,line_mask)],pending,min(5.0,possible*0.42),forbidden)
+            if attempted is not None:
+                attempted.update(ids[kind] for kind in pending)
+            verdict = query_replay.run_checks([(path,source,line_mask)],pending,
+                                              query_replay.replay_budget(possible),forbidden)
             safe.update(ids[k] for k in verdict)
     return selected-safe

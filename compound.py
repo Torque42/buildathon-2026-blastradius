@@ -80,7 +80,16 @@ def fixture_mix(selector, text, selected):
         fixture_tests.update(fixture_inputs.expand(selector, set().union(*(set(ids) for ids in subscribers.values()))))
     protected_inputs = selected & fixture_tests
     possible = selected - protected_inputs
-    reduced = instruction_impact.refine(selector, code, possible)
+    # If both inputs differ, keep every pristine fixture reader. Other tests
+    # can observe their first changed input only through the source edit.
+    import identity_select, lexical_inputs, get_inputs, slot_inputs
+    reduced = identity_select.refine(selector, code, possible) & possible
+    reduced = instruction_impact.refine(selector, code, reduced)
+    reduced = slot_inputs.refine(selector, code, reduced)
+    reduced = get_inputs.refine(selector, code, reduced)
+    lexical = lexical_inputs.refine(selector, code, selector.ALL)
+    if lexical is not selector.ALL:
+        reduced = lexical - protected_inputs
     reduced = access_select.refine(selector, code, reduced)
     reduced = consumer_select.refine(selector, code, reduced)
     reduced = branch_select.refine(selector, code, reduced)
@@ -94,8 +103,10 @@ def fixture_mix(selector, text, selected):
         # Keep the full selection when estimating whether the replay pays off.
         # Only explicitly traced executor tests with no reads of these fixtures qualify.
         protected = preserve(selector, code, result)
-        precise = query_phases.refine(selector, code, result, forbidden=sorted(fixtures))
+        attempted = set()
+        precise = query_phases.refine(selector, code, result, forbidden=sorted(fixtures), attempted=attempted)
         current = result if precise is None else result - (eligible - precise - protected)
-        after = query_replay.refine_edits(selector, [edit], current, forbidden=sorted(fixtures))
+        after = query_replay.refine_edits(selector, [edit], current, forbidden=sorted(fixtures),
+                                          skip=attempted)
         result -= eligible - after - protected
     return result
