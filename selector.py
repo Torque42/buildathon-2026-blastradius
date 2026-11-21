@@ -29,6 +29,8 @@ import isolated_imports
 import validation_inputs
 import fixture_inputs
 import observed_inputs
+import instruction_impact
+import registry_inputs
 import default_inputs
 import replay_edit
 WORKER_MS = 2000
@@ -1770,8 +1772,11 @@ def main():
             sel=default_inputs.refine(selector,text,sel,list(dict.fromkeys(reasons)))
             sel=validation_inputs.refine(selector,text,sel)
             sel=fixture_inputs.refine(selector,text,sel)
+            if "recursive-comparison" not in reasons:
+                sel=instruction_impact.refine(selector,text,sel)
             sel=observed_inputs.refine(selector,text,sel)
             sel=isolated_imports.refine(selector,text,sel)
+            sel=registry_inputs.include(selector,text,sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)

@@ -85,5 +85,5 @@ def refine(selector, text, selected):
             name = selector.TEST_FILE_ID[test]
             if name not in data["catalog"] or name in eligible or path in selector.EXTRA.get(test, ({}, {}))[0]:
                 keep.add(test)
-        return selected & keep
+        return (selected & keep) | ({selector.NUM[name] for name in eligible if name in selector.NUM} if len(row) == 6 else set())
     return selected

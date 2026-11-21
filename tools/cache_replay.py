@@ -20,7 +20,7 @@ for name in ("tpcds","tpch"):
     out=cache/name;out.mkdir(exist_ok=True)
     (out/"schema").write_bytes(pickle.dumps(schema,protocol=5))
     for table,data in rows.items():(out/("table-"+table)).write_bytes(pickle.dumps(data,protocol=5))
-for name in ("query-traces","query-rule-index","inspection","conditions","predicate-observations","identities"):
+for name in ("query-traces","query-rule-index","inspection","conditions","predicate-observations","identities","instruction-observations"):
     asset=maps/(name+".gz")
     if asset.is_file():(cache/name).write_bytes(gzip.decompress(asset.read_bytes()))
 
