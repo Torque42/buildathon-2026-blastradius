@@ -43,7 +43,14 @@ def refine(selector, text, selected):
         return selected
     patches = selector.parse_patch(text)
     if len(patches) != 1:
-        return selected
+        # Two edits may interact. Preserve earlier selections and also cover
+        # readers exposed by a validation change in any individual file.
+        from compound import pieces
+        totals=set(selected)
+        for part in pieces(selector,text):
+            if len(selector.parse_patch(part))==1:
+                totals.update(refine(selector,part,set()))
+        return totals
     patch = patches[0]
     path = patch["old"]
     if not path or path != patch["new"] or not path.startswith("sqlglot/expressions/") or path not in selector.SRC:
@@ -71,6 +78,8 @@ def refine(selector, text, selected):
             # An observed value dependency during import can fail collection.
             return set(selector.ALL)
         keep = set(selector.tests_of(selector.M["opens"].get(path)))
+        keep.update(selector.UNTRACED_POOL_TESTS)
+        keep.update(n for n,(raw,_) in selector.EXTRA.items() if path in raw)
         for hit in hits:
             if hit.startswith("import:"):
                 from isolated_imports import readers
