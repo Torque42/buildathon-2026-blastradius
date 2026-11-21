@@ -23,6 +23,7 @@ import query_replay
 import query_phases
 import flag_readers
 import identity_select
+import argument_reads
 import equality_reads
 import predicate_select
 import condition_select
@@ -1779,6 +1780,7 @@ def select_tests(text):
     selector = sys.modules[__name__]
     # A complete small reader set can be scheduled immediately. Larger reader
     # sets still benefit from the existing per-query and instruction refinements.
+    arguments = argument_reads.match(selector, text)
     equality = equality_reads.match(selector, text)
     slots = slot_inputs.refine(selector, text, ALL)
     if slots is ALL:
@@ -1789,7 +1791,7 @@ def select_tests(text):
     lexical = lexical_inputs.refine(selector, text, ALL)
     if lexical is ALL:
         lexical = None
-    for label, readers in (("identity-semantics", equality), ("initial-value", slots), ("dictionary-read", dictionary), ("keyword-read", lexical)):
+    for label, readers in (("argument-read", arguments), ("identity-semantics", equality), ("initial-value", slots), ("dictionary-read", dictionary), ("keyword-read", lexical)):
         if readers is not None and len(readers) <= 32 and sum(DUR[n] for n in readers) <= WORKER_MS:
             return import_impact.include(selector, text, readers), [label]
     sel, reasons = analyze(text)
@@ -1827,6 +1829,8 @@ def select_tests(text):
         sel = sel & dictionary
     if slots is not None:
         sel = sel & slots
+    if arguments is not None:
+        sel = sel & arguments
     if equality is not None:
         sel = sel & equality
     if reasons == ["def-header"]:
