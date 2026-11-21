@@ -35,6 +35,7 @@ import parser_table_keys
 import schema_keys
 import registry_inputs
 import default_inputs
+import constructor_inputs
 import replay_edit
 WORKER_MS = 2000
 
@@ -1785,6 +1786,8 @@ def main():
             sel=parser_table_keys.refine(selector,text,sel)
             sel=schema_keys.refine(selector,text,sel)
             sel=registry_inputs.include(selector,text,sel)
+            if reasons == ["def-header"]:
+                sel=constructor_inputs.refine(selector,text,sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)

@@ -1,0 +1,99 @@
+{
+  "tests/test_executor.py::TestExecutor::test_execute_tpcds": {
+    "calls": {
+      "Parser": 846,
+      "SetOperation": 24
+    },
+    "installed": [
+      "Parser",
+      "SetOperation"
+    ],
+    "omitted": [
+      "Parser.error_message_context",
+      "Parser.max_errors",
+      "Parser.max_nodes"
+    ],
+    "read": [
+      "Parser.error_message_context",
+      "Parser.max_nodes"
+    ],
+    "uncertain": []
+  },
+  "tests/test_executor.py::TestExecutor::test_execute_tpch": {
+    "calls": {
+      "Parser": 22,
+      "SetOperation": 0
+    },
+    "installed": [
+      "Parser",
+      "SetOperation"
+    ],
+    "omitted": [
+      "Parser.error_message_context",
+      "Parser.max_errors",
+      "Parser.max_nodes"
+    ],
+    "read": [
+      "Parser.max_nodes"
+    ],
+    "uncertain": []
+  },
+  "tests/test_executor.py::TestExecutor::test_optimized_tpch": {
+    "calls": {
+      "Parser": 67,
+      "SetOperation": 0
+    },
+    "installed": [
+      "Parser",
+      "SetOperation"
+    ],
+    "omitted": [
+      "Parser.error_message_context",
+      "Parser.max_errors",
+      "Parser.max_nodes"
+    ],
+    "read": [
+      "Parser.error_message_context",
+      "Parser.max_nodes"
+    ],
+    "uncertain": []
+  },
+  "tests/test_generator.py::TestGenerator::test_generator_memory": {
+    "calls": {
+      "Parser": 25,
+      "SetOperation": 0
+    },
+    "installed": [
+      "Parser"
+    ],
+    "omitted": [
+      "Parser.error_message_context",
+      "Parser.max_errors",
+      "Parser.max_nodes"
+    ],
+    "read": [
+      "Parser.error_message_context",
+      "Parser.max_nodes"
+    ],
+    "uncertain": []
+  },
+  "tests/test_parser.py::TestParser::test_max_nodes": {
+    "calls": {
+      "Parser": 6,
+      "SetOperation": 0
+    },
+    "installed": [
+      "Parser"
+    ],
+    "omitted": [
+      "Parser.error_message_context",
+      "Parser.max_errors",
+      "Parser.max_nodes"
+    ],
+    "read": [
+      "Parser.error_message_context",
+      "Parser.max_nodes"
+    ],
+    "uncertain": []
+  }
+}
