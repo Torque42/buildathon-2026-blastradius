@@ -875,6 +875,77 @@ def changed_binding_tests(path, old_tree, new_tree, removed, inserted):
     return affected
 
 
+@lru_cache(maxsize=1)
+def dispatch_map():
+    data = load_map("dispatch")
+    return set(data["catalog"]) == set(NUM), set(data["sites"]), data["readers"]
+
+@lru_cache(maxsize=64)
+def dispatch_constants(path):
+    return callback_spans(path, source_tree(path), SRC[path])
+
+def callback_spans(path, tree, source):
+    rows = {}
+    lines = source.splitlines()
+    has_factory = any(isinstance(stmt, ast.ImportFrom) and stmt.module == "sqlglot.dialects.dialect"
+                      and any(item.name == "rename_func" and not item.asname for item in stmt.names)
+                      for stmt in tree.body)
+    for cls in tree.body:
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for stmt in cls.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name) or stmt.targets[0].id not in ("FUNCTIONS","TRANSFORMS") or not isinstance(stmt.value, ast.Dict):
+                continue
+            for callback in stmt.value.values:
+                if isinstance(callback, ast.Lambda):
+                    constants = [node for node in ast.walk(callback.body) if isinstance(node, ast.Constant) and type(node.value) in (int, bool, str)]
+                elif has_factory and isinstance(callback, ast.Call) and isinstance(callback.func, ast.Name) and callback.func.id == "rename_func" and len(callback.args)==1 and not callback.keywords and isinstance(callback.args[0],ast.Constant) and type(callback.args[0].value) is str:
+                    constants = callback.args
+                else:
+                    continue
+                site = f"{path}:{callback.lineno}:{callback.col_offset}"
+                for value in constants:
+                    if value.lineno != value.end_lineno or not lines[value.lineno-1].isascii():
+                        continue
+                    token = lines[value.lineno-1][value.col_offset:value.end_col_offset]
+                    if token != str(value.value) and not (isinstance(value.value,str) and token[:1] in ("'",'"')):
+                        continue
+                    rows.setdefault(value.lineno,[]).append((value.col_offset,value.end_col_offset,type(value.value).__name__,site))
+    return rows
+
+def callback_readers(path, line, before, after):
+    if not path.startswith(("sqlglot/parsers/","sqlglot/generators/")):
+        return None
+    locations = FACTS["dispatch_spans"].get(path,{}) if "dispatch_spans" in FACTS else dispatch_constants(path)
+    slots = locations.get(line, ())
+    if not slots:
+        return None
+    catalog,covered,readers = dispatch_map()
+    diagnostics = profile()
+    if not catalog or path in diagnostics["source_reads"] or line in diagnostics["code_reads"].get(path, ()):
+        return None
+    for start,end,kind,site in slots:
+        prefix,suffix=before[:start],before[end:]
+        if site not in covered or not after.startswith(prefix) or not after.endswith(suffix):
+            continue
+        value=after[start:len(after)-len(suffix)]
+        if not value or value==before[start:end] or not value.isascii() or len(value)>256:
+            continue
+        try:
+            tokens = list(tokenize.generate_tokens(io.StringIO(value).readline))
+            if tokens[0].string != value or tokens[0].type not in (tokenize.STRING,tokenize.NUMBER,tokenize.NAME):
+                continue
+            parsed=ast.literal_eval(value)
+        except (SyntaxError,ValueError,tokenize.TokenError):
+            continue
+        if type(parsed).__name__ != kind:
+            continue
+        ids=readers.get(site,())
+        if any(node not in NUM for node in ids):
+            return None
+        return {NUM[node] for node in ids}
+    return None
+
 def analyze_py_source(path, f, reasons, single_file):
     old = SRC.get(path)
     if f["old"] is None:
@@ -888,6 +959,14 @@ def analyze_py_source(path, f, reasons, single_file):
         reasons.append("deleted")
         return set(ALL)
     new, removed, inserted = apply(old, f["hunks"])
+    if single_file and f["old"]==f["new"] and len(removed)==len(inserted)==1 and inserted[0] in (removed[0],removed[0]+1) and removed[0]>2 and path.startswith(("sqlglot/parsers/","sqlglot/generators/")):
+        line=removed[0]
+        original,updated=old.split("\n"),new.split("\n")
+        if original[:line-1]==updated[:line-1] and original[line:]==updated[line:]:
+            readers=callback_readers(path,line,original[line-1].removesuffix("\r"),updated[line-1].removesuffix("\r"))
+            if readers is not None:
+                reasons.append("module-level:callback")
+                return readers
     if single_file and len(removed)==len(inserted)==1 and inserted[0] in (removed[0],removed[0]+1) and "fields" in FACTS and removed[0]>2:
         line = removed[0]
         records = FACTS["fields"].get(path,{}).get(line,())

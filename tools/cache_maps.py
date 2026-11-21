@@ -19,11 +19,13 @@ with tempfile.TemporaryDirectory() as directory:
     import selector
 
 queries = set()
-functions, statements, comments, fields, interiors = {}, {}, {}, {}, {}
+functions, statements, comments, fields, interiors, callbacks = {}, {}, {}, {}, {}, {}
 for path, source in selector.SRC.items():
     if not path.startswith("sqlglot/") or not path.endswith(".py"):
         continue
     tree = ast.parse(source)
+    if path.startswith(("sqlglot/parsers/","sqlglot/generators/")):
+        callbacks[path] = selector.callback_spans(path,tree,source)
     lines = source.splitlines()
     locations = fields[path] = {}
     def fact(node, start, end, kind, detail):
@@ -124,4 +126,4 @@ for path, source in selector.SRC.items():
             if selector.self_field(field) and isinstance(enum, ast.Attribute) and isinstance(enum.value, ast.Name):
                 queries.add((field.attr, enum.value.id))
 with (cache / "facts").open("wb") as stream:
-    marshal.dump({"test_importers": selector.test_module_imports(), "pool": selector.POOL_IDS, "fields":fields, "functions":functions, "statements":statements, "multiline":comments, "interior":interiors, "version": selector.fixed_dialect_versions(), "enum": {pair: selector.enum_attribute(*pair) for pair in queries}}, stream)
+    marshal.dump({"dispatch_spans":callbacks,"test_importers": selector.test_module_imports(), "pool": selector.POOL_IDS, "fields":fields, "functions":functions, "statements":statements, "multiline":comments, "interior":interiors, "version": selector.fixed_dialect_versions(), "enum": {pair: selector.enum_attribute(*pair) for pair in queries}}, stream)
