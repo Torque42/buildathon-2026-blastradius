@@ -28,6 +28,7 @@ import compound
 import isolated_imports
 import validation_inputs
 import fixture_inputs
+import default_inputs
 import replay_edit
 WORKER_MS = 2000
 
@@ -1765,6 +1766,7 @@ def main():
                 sel=predicate_select.refine(selector,text,sel)
                 sel=condition_select.refine(selector,text,sel)
                 sel=query_replay.refine(selector,text,sel) | preserve
+            sel=default_inputs.refine(selector,text,sel,list(dict.fromkeys(reasons)))
             sel=validation_inputs.refine(selector,text,sel)
             sel=fixture_inputs.refine(selector,text,sel)
             sel=isolated_imports.refine(selector,text,sel)

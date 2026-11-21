@@ -33,3 +33,11 @@ select the entire catalog. Pytest configuration or fixture hook changes select t
 entire catalog because they can affect the complete session. If a full-suite schedule costs at most as much as
 the selected tests, the selector runs the full suite. Otherwise it fits extra
 tests into the available worker time.
+
+## Additional dependency measurements
+
+The selector profiles cold imports and source reads for each test file and the most expensive individual tests. The import map combines runs on macOS and Linux. For a changed literal function default, it also uses cold function entry and audited reads of function defaults and code objects. A test qualifies for this last reduction only when its pristine trace completed successfully in both environments.
+
+Expression argument validation records the fields missing from each concrete expression and the modules that consumed those fields during initialization. Changes affecting collection retain the dependent tests. SQL fixture analysis compares the outputs of the pinned fixture loaders and the tuple fields each executor test consumed. For execution-disabled benchmark queries, a changed input must still parse and survive serialization before the executor test can be omitted.
+
+The collection scripts in the `tools` directory operate on the unmodified pinned SQLGlot tree and the catalog from the competition starter. `build_isolated_imports.py` and `merge_cold_imports.py` produce the import map. `build_body_coverage.py`, `pack_default_entries.py` and `build_default_inspection.py` produce the default-argument evidence. `build_validation_inputs.py`, `build_fixture_fields.py` and `build_fixture_readers.py` collect the validation and fixture observations.
