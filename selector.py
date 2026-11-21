@@ -955,6 +955,15 @@ def callback_readers(path, line, before, after):
         return {NUM[node] for node in ids}
     return None
 
+def recursive_comparison_edit(path,old,new,removed,inserted):
+    if len(removed)!=1 or len(inserted)!=1:
+        return False
+    line=removed[0]
+    if not any(start<=line<=end and owner.rsplit(".",1)[-1] in {"__eq__","__ne__","__lt__","__le__","__gt__","__ge__"} for start,end,owner in FACTS.get("functions",{}).get(path,())):
+        return False
+    before=old.splitlines();after=new.splitlines()
+    return line<=len(after) and " is " in before[line-1] and any(op in after[line-1] for op in ("==","!=","<",">"))
+
 def analyze_py_source(path, f, reasons, single_file):
     old = SRC.get(path)
     if f["old"] is None:
@@ -968,6 +977,10 @@ def analyze_py_source(path, f, reasons, single_file):
         reasons.append("deleted")
         return set(ALL)
     new, removed, inserted = apply(old, f["hunks"])
+    if recursive_comparison_edit(path,old,new,removed,inserted):
+        reasons.append("recursive-comparison")
+        return set(ALL)
+
     if single_file and f["old"]==f["new"] and len(removed)==len(inserted)==1 and inserted[0] in (removed[0],removed[0]+1) and removed[0]>2 and path.startswith(("sqlglot/parsers/","sqlglot/generators/")):
         line=removed[0]
         original,updated=old.split("\n"),new.split("\n")
@@ -1738,7 +1751,9 @@ def main():
             sel, reasons = analyze(text)
             selector=sys.modules[__name__]
             combined=compound.select(selector,text,sel)
-            if combined is not None:
+            if "recursive-comparison" in reasons:
+                sel=set(ALL)
+            elif combined is not None:
                 sel=combined
             else:
                 preserve=replay_edit.preserve(selector,text,sel)
