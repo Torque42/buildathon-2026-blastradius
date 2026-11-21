@@ -51,7 +51,6 @@ def lexer_guards(selector):
     return enums,reserved
 
 def refine(selector,text,selected):
-    if not selected:return selected
     changes=selector.parse_patch(text)
     if len(changes)!=1:return selected
     patch=changes[0];path=patch["old"]
@@ -90,5 +89,12 @@ def refine(selector,text,selected):
             may=reads.get(site,0)
         protected=selector.tests_of(selector.M["opens"].get(path))|preserve_scope(selector,path,1<<line,selected)
         protected.update(n for n,(seen,_) in selector.EXTRA.items() if path in seen)
-        return {n for n in selected if n in protected or may & bits[selector.TEST_FILE_ID[n]]}
+        answer={n for n in selected if n in protected or may & bits[selector.TEST_FILE_ID[n]]}
+        if kind in ("key","token"):
+            # An inherited tokenizer can read the table without ever executing
+            # a line in its declaring dialect during the test itself.
+            import isolated_imports
+            cold=isolated_imports.readers(selector,path)
+            answer.update(n for n in cold if may & bits[selector.TEST_FILE_ID[n]])
+        return answer
     return selected
