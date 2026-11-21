@@ -1777,6 +1777,8 @@ def main():
                 sel=instruction_impact.refine(selector,text,sel)
             sel=observed_inputs.refine(selector,text,sel)
             sel=isolated_imports.refine(selector,text,sel)
+            if "recursive-comparison" not in reasons:
+                sel=compound.fixture_mix(selector,text,sel)
             sel=schema_keys.refine(selector,text,sel)
             sel=registry_inputs.include(selector,text,sel)
         except Exception as e:  # never crash: run everything

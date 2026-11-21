@@ -37,3 +37,53 @@ def select(selector,text,default):
     if all_function and edits:
         selected=query_replay.refine_edits(selector,edits,selected)
     return selected|protected
+
+def fixture_mix(selector, text, selected):
+    """An untouched fixture cannot be the first changed input observed by a test."""
+    import json
+    from pathlib import Path
+    import fixture_inputs
+    import instruction_impact
+    import query_replay
+    from replay_edit import possible_edit, preserve
+
+    parts = pieces(selector, text)
+    if not parts:
+        return selected
+    source = []
+    fixtures = set()
+    fixture_tests = set()
+    for part in parts:
+        files = selector.parse_patch(part)
+        if len(files) != 1:
+            return selected
+        patch = files[0]
+        path = patch["old"]
+        if path is None or path != patch["new"]:
+            return selected
+        if path.startswith("sqlglot/"):
+            source.append(part)
+        elif path.startswith("tests/fixtures/") and path.endswith(".sql"):
+            if path not in fixture_inputs.profiles()[0]["contents"] or path in fixtures:
+                return selected
+            fixtures.add(path)
+            fixture_tests.update(selector.analyze(part)[0])
+        else:
+            return selected
+    if len(source) != 1 or not fixtures:
+        return selected
+    code = source[0]
+    edit = possible_edit(selector, code)
+    if not edit:
+        return selected
+    result = instruction_impact.refine(selector, code, selected) | (selected & fixture_tests)
+    cold_reads = json.loads((Path(__file__).parent / "maps/tpc-fixture-paths.json").read_bytes())
+    eligible = {selector.NUM[node] for node, paths in cold_reads.items()
+                if node in selector.NUM and not fixtures.intersection(paths)} & result
+    if eligible:
+        # Keep the full selection when estimating whether the replay pays off.
+        # Only explicitly traced executor tests with no reads of these fixtures qualify.
+        protected = preserve(selector, code, result)
+        after = query_replay.refine_edits(selector, [edit], result, forbidden=sorted(fixtures))
+        result -= eligible - after - protected
+    return result

@@ -31,7 +31,7 @@ def refine(selector,text,selected):
     return refine_edits(selector,[edit],selected) if edit else selected
 
 
-def refine_edits(selector,edits,selected):
+def refine_edits(selector,edits,selected,forbidden=()):
     choices={k:selector.NUM[n] for k,n in IDS.items() if n in selector.NUM and selector.NUM[n] in selected}
     if not choices:return selected
     init,sets,data=profile()
@@ -54,7 +54,7 @@ def refine_edits(selector,edits,selected):
     if needed:
         budget=min(5.0,possible*0.42)
         try:
-            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([[(path,new,hex(mask)) for path,new,mask in edits],needed,budget]).encode(),capture_output=True,timeout=budget*2+1)
+            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([[(path,new,hex(mask)) for path,new,mask in edits],needed,budget,forbidden]).encode(),capture_output=True,timeout=budget*2+1)
             output=result.stdout
         except subprocess.TimeoutExpired as exc:
             output=exc.stdout or b""
@@ -167,7 +167,17 @@ def verify_query(kind,case,stages,edits):
 
 
 def run():
-    encoded,work,budget=json.load(sys.stdin)
+    encoded,work,budget,forbidden=json.load(sys.stdin)
+    opened = set()
+    if forbidden:
+        import os
+        suffixes = tuple("/" + path for path in forbidden)
+        def record(event, args):
+            if event == "open" and isinstance(args[0], (str, bytes)):
+                path = os.path.abspath(os.fsdecode(args[0]))
+                if path.endswith(suffixes):
+                    opened.add(path)
+        sys.addaudithook(record)
     edits=[(path,new,int(mask,16)) for path,new,mask in encoded]
     root=HERE/"cache"/"pinned"
     sys.path[:0]=[str(HERE),str(root)]
@@ -185,7 +195,8 @@ def run():
             except Exception:
                 break
         else:
-            print(kind,flush=True)
+            if not opened:
+                print(kind,flush=True)
 
 if __name__=="__main__":
     run()
