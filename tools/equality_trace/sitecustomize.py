@@ -43,6 +43,12 @@ def observe(key, a, b, negate):
         equivalent = True
     elif left == right == "scalar":
         equivalent = same == (a == b) and (not same) == (a != b)
+    elif {left, right} in ({"expression", "scalar"}, {"expression", "container"},
+                           {"expression", "identity"}, {"container", "scalar"}):
+        # The pinned Expr compares different exact classes before computing any
+        # hash. Exact scalar/container builtin comparisons cannot consume an Expr.
+        # These disjoint protocols therefore cannot re-enter the changed __hash__.
+        equivalent = True
     elif left == right == "expression":
         equivalent = same or x is not y
     elif left == right == "container" and x is y and same:

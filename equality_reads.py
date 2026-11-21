@@ -32,7 +32,7 @@ def match(selector,text):
     if line not in selector.FACTS.get("statements",{}).get(path,{}):
         return None
     for start,end,name in selector.FACTS.get("functions",{}).get(path,()):
-        if start<=line<=end and name.rsplit(".",1)[-1] in {"__eq__","__ne__","__hash__","__getattribute__"}:
+        if start<=line<=end and name.rsplit(".",1)[-1] in {"__eq__","__ne__","__getattribute__"}:
             return None
     a,b=old.splitlines(),new.splitlines()
     if a[:line-1]!=b[:line-1] or a[line:]!=b[line:]:
