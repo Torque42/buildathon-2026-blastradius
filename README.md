@@ -26,7 +26,10 @@ that use a setting through an inherited implementation. Regenerate that map with
 plugin in `tools/build_fixture_scopes.py` records data files and source lines used
 by shared setup so every test in the affected scope is eligible.
 
-Comparison edits retain their ordinary coverage selections. A detected module
-load failure can select the entire catalog. If a full-suite schedule costs at most as much as
+For an isolated identity-to-equality change, the selector checks pinned declarations
+and assignments for equivalent behavior. It retains tests that read the changed
+source file and tests with unknown coverage. A detected module load failure can
+select the entire catalog. Pytest configuration or fixture hook changes select the
+entire catalog because they can affect the complete session. If a full-suite schedule costs at most as much as
 the selected tests, the selector runs the full suite. Otherwise it fits extra
 tests into the available worker time.
