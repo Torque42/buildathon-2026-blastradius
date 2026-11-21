@@ -67,7 +67,7 @@ def refine(selector, text, selected):
         # Verify that this dictionary is the sole source difference. AST equality
         # alone could hide edits to comments or to text read by another module.
         def outside(source, node):
-            lines = source.splitlines(keepends=True)
+            lines = source.replace("\r\n", "\n").splitlines(keepends=True)
             return ("".join(lines[:node.lineno-1]).encode()+lines[node.lineno-1].encode()[:node.col_offset],
                     lines[node.end_lineno-1].encode()[node.end_col_offset:]+"".join(lines[node.end_lineno:]).encode())
         if outside(before, old_value) != outside(after, new_value):
