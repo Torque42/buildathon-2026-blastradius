@@ -11,7 +11,6 @@ import json
 import os
 import re
 import sys
-import tarfile
 import tokenize
 from functools import lru_cache
 from pathlib import Path
@@ -29,11 +28,7 @@ def log(*a):
 M = json.load(gzip.open(HERE / "maps" / "maps.json.gz", "rt"))
 SETS = M["sets"]
 MAP_TESTS = M["tests"]
-SRC = {}
-with tarfile.open(HERE / "maps" / "src.tar.xz") as tf:
-    for m in tf.getmembers():
-        if m.isfile():
-            SRC[m.name] = tf.extractfile(m).read().decode("utf-8")
+SRC = json.load(gzip.open(HERE / "maps/sources.json.gz"))
 
 TJ = json.loads((DATA / "tests.json").read_text("utf-8"))["tests"]
 NUM = {t["id"]: t["number"] for t in TJ}
@@ -617,6 +612,8 @@ def references_enum(expr, enum_name):
     )
 
 
+BASE_NAMES, WRITE_PATHS = json.load(gzip.open(HERE / "maps/source-index.json.gz"))
+
 def enum_attribute(field, enum_name):
     """Require every syntactically visible write to produce an enum member."""
     pending = [field]
@@ -627,9 +624,7 @@ def enum_attribute(field, enum_name):
             continue
         examined.add(name)
         writes = 0
-        for path, text in SRC.items():
-            if not path.endswith(".py") or name not in text:
-                continue
+        for path in WRITE_PATHS.get(name, ()):
             tree = source_tree(path)
             for node in ast.walk(tree):
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -694,14 +689,8 @@ def optional_identity_field(path, field, cls):
         for node in value_cls.body
     ):
         return False
-    for source, blob in SRC.items():
-        if not source.endswith(".py") or class_type not in blob:
-            continue
-        for declaration in ast.walk(source_tree(source)):
-            if isinstance(declaration, ast.ClassDef) and any(
-                class_type in names_in(base) for base in declaration.bases
-            ):
-                return False
+    if class_type in BASE_NAMES:
+        return False
     # The inferred field is either empty or assigned from the values of a
     # mapping whose constructor input is declared as dict[..., this type].
     mappings = set()
@@ -894,14 +883,16 @@ def analyze_py_source(path, f, reasons, single_file):
         return set(ALL)
     old_tree, new_tree = source_tree(path), ast.parse(new)
     if equal_ast(old_tree, new_tree):
-        if new.split("\n")[:2] != old.split("\n")[:2]:
-            reasons.append("header-lines")  # coding cookie territory
-            return importers_all(path)
         reasons.append("comment-only")
         return set()
     if single_file and f["old"] == f["new"] and equivalent_comparison(path, old, new_tree, removed, inserted):
         reasons.append("equivalent-by-source")
         return tests_of(M["opens"].get(path))
+    if single_file and "NUMERIC_ESCAPES" in old and f["old"] == f["new"]:
+        readers = value_readers(path, old_tree, new_tree, removed)
+        if readers is not None:
+            reasons.append("key-value")
+            return readers
     changed = added_lines(f["hunks"])
     if eager_failure(new_tree, changed):
         # A broken lazy import can cascade beyond tests that reached the
@@ -1077,6 +1068,56 @@ def pool_tests():
 
 UNTRACED_POOL_TESTS = pool_tests().difference(POOL_NUMBERS)
 
+EXTRA = {NUM[name]: entry for name, entry in json.load(gzip.open(HERE / "maps/extra-lines.json.gz")).items() if name in NUM}
+
+def extra_tests(path, reasons):
+    if reasons == ["equivalent-by-source"]:
+        return (UNMAPPED - EXTRA.keys()) | {number for number, (raw, _) in EXTRA.items() if path in raw}
+    if not reasons or not all(reason in {"stmt", "compound-header", "key-value"} or reason.startswith("module-level:") for reason in reasons):
+        return UNMAPPED
+    # Keep every isolated test that imported the module or opened its source.
+    return (UNMAPPED - EXTRA.keys()) | {number for number, (raw, lines) in EXTRA.items() if path in raw or path in lines}
+
+@lru_cache(maxsize=1)
+def key_profile():
+    profile = json.load(gzip.open(HERE / "maps/literal-keys.json.gz"))
+    return profile["data"], {NUM[test] for test in profile["tests"] if test in NUM}
+
+def value_readers(path, old_tree, new_tree, removed):
+    if len(removed) != 1:
+        return None
+    line = removed[0]
+    def locate(tree):
+        for cls in tree.body:
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            for owner in cls.body:
+                if not isinstance(owner, ast.ClassDef):
+                    continue
+                for stmt in owner.body:
+                    if isinstance(stmt, ast.Assign) and stmt.lineno <= line <= stmt.end_lineno and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == "NUMERIC_ESCAPES" and isinstance(stmt.value, ast.Dict):
+                        return cls.name + "." + owner.name, stmt
+    first, second = locate(old_tree), locate(new_tree)
+    if not first or not second or first[0] != second[0]:
+        return None
+    original, changed = first[1].value, second[1].value
+    if not equal_ast(original.keys, changed.keys) or not all(isinstance(key, ast.Constant) and isinstance(key.value, str) for key in original.keys):
+        return None
+    keys = [key.value for key, before, after in zip(original.keys, original.values, changed.values) if not equal_ast(before, after)]
+    if not keys or not all(isinstance(value, ast.Tuple) and len(value.elts) == 4 and all(isinstance(item, ast.Constant) and type(item.value) is int for item in value.elts) for value in original.values + changed.values):
+        return None
+    second[1].value = original
+    try:
+        if not equal_ast(old_tree, new_tree):
+            return None
+    finally:
+        second[1].value = changed
+    profile, known = key_profile()
+    accesses = profile.get(path[:-3].replace("/", ".") + ":" + first[0] + ":NUMERIC_ESCAPES")
+    if accesses is None or "" in accesses:
+        return None
+    return (ALL - known - UNMAPPED) | {NUM[test.partition("[")[0]] for test, reads in accesses.items() if test.partition("[")[0] in NUM and (None in reads or set(keys).intersection(reads))}
+
 
 def analyze(text):
     reasons = []
@@ -1091,7 +1132,7 @@ def analyze(text):
             got = analyze_py_source(path, f, file_reasons, len(files) == 1)
             reasons.extend(file_reasons)
             if file_reasons != ["comment-only"]:
-                got |= UNTRACED_POOL_TESTS | UNMAPPED
+                got |= UNTRACED_POOL_TESTS | extra_tests(path, file_reasons)
             sel |= got
             if path.startswith("sqlglot/typing/") and "comment-only" not in file_reasons:
                 sel |= set(BY_FILE.get("tests/test_typing.py", []))
