@@ -37,6 +37,7 @@ import registry_inputs
 import default_inputs
 import constructor_inputs
 import lexical_inputs
+import import_impact
 import replay_edit
 WORKER_MS = 2000
 
@@ -1790,6 +1791,7 @@ def main():
             sel=lexical_inputs.refine(selector,text,sel)
             if reasons == ["def-header"]:
                 sel=constructor_inputs.refine(selector,text,sel)
+            sel=import_impact.include(selector,text,sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)
