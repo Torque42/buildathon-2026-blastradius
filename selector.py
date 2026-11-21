@@ -21,6 +21,7 @@ DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
 sys.path.insert(0,str(HERE))
 import query_replay
 import flag_readers
+import predicate_select
 WORKER_MS = 2000
 
 
@@ -43,6 +44,7 @@ SRC = load_map("sources")
 
 TJ = json.loads((DATA / "tests.json").read_text("utf-8"))["tests"]
 NUM = {t["id"]: t["number"] for t in TJ}
+TEST_FILE_ID = {t["number"]:t["id"] for t in TJ}
 DUR = {t["number"]: int(t["seconds"] * 1000 + 0.5) for t in TJ}
 BY_FILE = {}
 for t in TJ:
@@ -1731,6 +1733,7 @@ def main():
             text = p.read_text("utf-8", errors="replace")
             sel, reasons = analyze(text)
             sel = flag_readers.refine(sys.modules[__name__], text, sel)
+            sel = predicate_select.refine(sys.modules[__name__], text, sel)
             sel = query_replay.refine(sys.modules[__name__], text, sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
