@@ -32,6 +32,7 @@ import fixture_inputs
 import observed_inputs
 import instruction_impact
 import parser_table_keys
+import collection_guard
 import branch_select
 import comment_layers
 import function_changes
@@ -1811,6 +1812,9 @@ def main():
                 precise = query_phases.refine(selector,text,sel)
                 sel = query_replay.refine(selector,text,sel if precise is None else precise) | retained
             sel.update(comment_readers)
+            if collection_guard.failed(selector,text,sel):
+                sel=set(ALL)
+                reasons.append("collection-failed")
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)
