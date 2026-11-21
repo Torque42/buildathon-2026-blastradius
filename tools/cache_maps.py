@@ -124,4 +124,4 @@ for path, source in selector.SRC.items():
             if selector.self_field(field) and isinstance(enum, ast.Attribute) and isinstance(enum.value, ast.Name):
                 queries.add((field.attr, enum.value.id))
 with (cache / "facts").open("wb") as stream:
-    marshal.dump({"pool": selector.POOL_IDS, "fields":fields, "functions":functions, "statements":statements, "multiline":comments, "interior":interiors, "version": selector.fixed_dialect_versions(), "enum": {pair: selector.enum_attribute(*pair) for pair in queries}}, stream)
+    marshal.dump({"test_importers": selector.test_module_imports(), "pool": selector.POOL_IDS, "fields":fields, "functions":functions, "statements":statements, "multiline":comments, "interior":interiors, "version": selector.fixed_dialect_versions(), "enum": {pair: selector.enum_attribute(*pair) for pair in queries}}, stream)

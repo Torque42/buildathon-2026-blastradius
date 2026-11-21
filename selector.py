@@ -199,10 +199,13 @@ class Locator:
     def __init__(self, src, tree=None):
         self.tree = tree if tree is not None else ast.parse(src)
         self.stmts = []  # (start, end, node, parents)
+        self.lambdas = []
         self._walk(self.tree, [])
 
     def _walk(self, node, parents):
         for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Lambda):
+                self.lambdas.append(child)
             if isinstance(child, ast.stmt):
                 self.stmts.append((child.lineno, child.end_lineno, child, parents))
             self._walk(child, parents + [child] if isinstance(child, (ast.stmt, ast.Lambda)) else parents)
@@ -215,7 +218,7 @@ class Locator:
         return best
 
     def lambdas_at(self, line):
-        return [n for n in ast.walk(self.tree) if isinstance(n, ast.Lambda) and n.lineno <= line <= n.end_lineno]
+        return [n for n in self.lambdas if n.lineno <= line <= n.end_lineno]
 
 
 def header_end(n):
@@ -994,6 +997,8 @@ def analyze_py_source(path, f, reasons, single_file):
 @lru_cache(maxsize=1)
 def test_module_imports():
     """Build reverse imports among the pinned test modules, including package initializers."""
+    if "test_importers" in FACTS:
+        return FACTS["test_importers"]
     modules = {path[:-3].replace("/", ".").removesuffix(".__init__"): path
                for path in SRC if path.startswith("tests/") and path.endswith(".py")}
     reverse = {}
