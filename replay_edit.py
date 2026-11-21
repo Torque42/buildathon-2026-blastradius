@@ -2,6 +2,7 @@ import gzip,json
 from pathlib import Path
 from functools import lru_cache
 import importlib.abc
+import importlib.machinery
 import importlib.util
 @lru_cache(4)
 def possible_edit(selector,text):
@@ -32,22 +33,26 @@ def possible_edit(selector,text):
     return path,new,((1<<(end-start+1))-1)<<start
 
 
-class Overlay(importlib.abc.MetaPathFinder,importlib.abc.Loader):
-    def __init__(self,path,source,root):
-        self.name=path[:-3].replace("/",".").removesuffix(".__init__")
-        self.source=source
-        self.file=root/path
+class Overlay(importlib.abc.MetaPathFinder, importlib.machinery.SourceFileLoader):
+    """Load a patched module with the normal package path and resource semantics."""
+    def __init__(self, path, source, root):
+        self.name = path[:-3].replace("/", ".").removesuffix(".__init__")
+        self.source = source
+        self.file = root / path
+        super().__init__(self.name, str(self.file))
 
-    def find_spec(self,fullname,path=None,target=None):
-        if fullname==self.name:
-            return importlib.util.spec_from_file_location(fullname,self.file,loader=self)
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == self.name:
+            return importlib.util.spec_from_file_location(fullname, self.file, loader=self)
 
-    def create_module(self,spec):
-        return None
+    def get_code(self, fullname):
+        # The pin's bytecode was compiled before applying this overlay.
+        return compile(self.source, str(self.file), "exec", dont_inherit=True)
 
-    def exec_module(self,module):
-        exec(compile(self.source,str(self.file),"exec",dont_inherit=True),module.__dict__)
-
+    def get_data(self, path):
+        if Path(path) == self.file:
+            return self.source.encode("utf-8")
+        return super().get_data(path)
 
 
 @lru_cache(1)
