@@ -38,6 +38,26 @@ def declarations(selector, path):
     return result
 
 
+def value_readers(rows, declared, site, key):
+    pending = [site]
+    reached = set()
+    contexts = set()
+    while pending:
+        source = pending.pop()
+        if source in reached:
+            continue
+        if source not in declared:
+            return {""}
+        reached.add(source)
+        bucket = rows.get(source, {})
+        for hit in set(bucket.get(key, ())) | set(bucket.get("*", ())):
+            if hit.startswith("copy:"):
+                pending.append(hit[5:])
+            else:
+                contexts.add(hit)
+    return contexts
+
+
 def refine(selector, text, selected):
     if not ("True" in text and "False" in text):
         return selected
@@ -72,8 +92,7 @@ def refine(selector, text, selected):
         catalog,sites,readers=evidence()
         if site not in sites or catalog!=set(selector.NUM):
             return selected
-        bucket = readers.get(site,{})
-        hits = set(bucket.get(key,())) | set(bucket.get("*",()))
+        hits = value_readers(readers, sites, site, key)
         if "" in hits:
             # An observed value dependency during import can fail collection.
             return set(selector.ALL)

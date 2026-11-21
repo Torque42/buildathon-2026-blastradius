@@ -40,6 +40,9 @@ def view(obj,attr,mode):
     val=getattr(obj,attr)
     slot=owner(obj)
     if not slot:return val
+    if mode.startswith("copy:") and type(val) is dict and all(type(k) is str and type(v) is bool for k,v in val.items()):
+        events.setdefault(slot,{}).setdefault("*",set()).add(mode)
+        return val
     if track_keys:
         mark(slot,"*")
     elif mode=="validation":
@@ -111,6 +114,18 @@ class Loader(importlib.machinery.SourceFileLoader):
                     return node
                 mode="opaque"
                 if node.attr=="arg_types":
+                    if os.environ.get("BR_SCHEMA_COPY") and not track_keys and isinstance(p,ast.Dict) and any(
+                        k is None and v is node for k,v in zip(p.keys,p.values)
+                    ):
+                        assignment=parents.get(p)
+                        cls=parents.get(assignment)
+                        targets=(assignment.targets if isinstance(assignment,ast.Assign) else
+                                 [assignment.target] if isinstance(assignment,ast.AnnAssign) else [])
+                        if (getattr(assignment,"value",None) is p and len(targets)==1 and
+                                isinstance(targets[0],ast.Name) and targets[0].id=="arg_types" and
+                                isinstance(cls,ast.ClassDef) and isinstance(parents.get(cls),ast.Module) and
+                                name.startswith("sqlglot.expressions.")):
+                            mode="copy:"+name+":"+cls.name
                     # All these consumers observe only the existing keys.
                     if isinstance(p,(ast.For,ast.comprehension)) and p.iter is node:mode="keys"
                     if isinstance(p,ast.Compare) and len(p.ops)==1 and p.comparators[0] is node and isinstance(p.ops[0],(ast.In,ast.NotIn)):mode="keys"
