@@ -13,7 +13,17 @@ import tarfile
 with tarfile.open(root / "maps/src.tar.xz") as archive:
     archive.extractall(cache/"pinned",filter="data")
 
-for name in ("maps", "sources", "pool", "observed-attributes", "source-index", "extra-lines"):
+# The pin archive already carries these exact source bytes, including CRLFs.
+import hashlib
+manifest = json.loads((root / "maps/source-manifest.json").read_bytes())
+sources = {}
+for rel, digest in manifest.items():
+    raw = (cache / "pinned" / rel).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError(f"Pristine source digest differs for {rel}")
+    sources[rel] = raw.decode("utf-8")
+(cache / "sources").write_bytes(marshal.dumps(sources))
+for name in ("maps", "pool", "observed-attributes", "source-index", "extra-lines"):
     with (cache / name).open("wb") as stream:
         marshal.dump(json.load(gzip.open(root / "maps" / (name + ".json.gz"))), stream)
 with tempfile.TemporaryDirectory() as directory:
