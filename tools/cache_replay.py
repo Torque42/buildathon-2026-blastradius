@@ -28,3 +28,13 @@ for name in ("order-shapes","sources","flags"):
     source=maps/(name+".json.gz")
     if source.is_file() and not (cache/name).exists():
         (cache/name).write_bytes(marshal.dumps(json.loads(gzip.decompress(source.read_bytes()))))
+
+# Pre-index source locations in the pinned parser tables once during the build.
+import ast
+sys.path.insert(0, str(r))
+if (r/"parser_table_keys.py").is_file():
+    from parser_table_keys import collect_entries
+    sources=marshal.loads((cache/"sources").read_bytes())
+    entries={path:collect_entries(path,ast.parse(source)) for path,source in sources.items()
+             if path=="sqlglot/parser.py" or path.startswith("sqlglot/parsers/") and path.endswith(".py")}
+    (cache/"parser-table-entries").write_bytes(marshal.dumps(entries))

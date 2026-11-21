@@ -87,8 +87,32 @@ def enclosing(node,parents,kind):
 def single_copy(node,parents):
     # In a direct class table spread the keys keep their names. Track all dialects'
     # keyed observations at selection time. Other copying and iteration are opaque.
+    spread = node
     outer = parents.get(node)
-    if not isinstance(outer,ast.Dict) or not any(key is None and val is node for key,val in zip(outer.keys,outer.values)):
+    # A string-key filter of the form {k:v for k,v in source.items() if k!=s}
+    # preserves both keys and values for every retained entry. The selector
+    # conservatively follows the edge even for the excluded string.
+    if isinstance(outer,ast.Attribute) and outer.attr=="items":
+        call=parents.get(outer)
+        comp=parents.get(call)
+        table=parents.get(comp)
+        if (not isinstance(call,ast.Call) or call.args or call.keywords or not isinstance(comp,ast.comprehension)
+                or not isinstance(table,ast.DictComp) or table.generators!=[comp] or comp.is_async
+                or not isinstance(comp.target,ast.Tuple) or len(comp.target.elts)!=2):
+            return False
+        keys=comp.target.elts
+        if not all(isinstance(n,ast.Name) for n in (*keys,table.key,table.value)):
+            return False
+        if [table.key.id,table.value.id]!=[n.id for n in keys]:
+            return False
+        if any(not isinstance(n,ast.Compare) or not isinstance(n.left,ast.Name) or n.left.id!=keys[0].id
+               or len(n.ops)!=1 or not isinstance(n.ops[0],(ast.Eq,ast.NotEq)) or len(n.comparators)!=1
+               or not isinstance(n.comparators[0],ast.Constant) or type(n.comparators[0].value) is not str
+               for n in comp.ifs):
+            return False
+        spread=table
+        outer=parents.get(table)
+    if not isinstance(outer,ast.Dict) or not any(key is None and val is spread for key,val in zip(outer.keys,outer.values)):
         return False
     assign = parents.get(outer)
     if not isinstance(assign,(ast.Assign,ast.AnnAssign)) or not isinstance(parents.get(assign),ast.ClassDef):

@@ -145,13 +145,22 @@ def affected(selector, patch, details=None):
         return None
     return path, impacted, inspected
 
+@lru_cache(maxsize=4)
+def single_impact(selector, text):
+    patches = selector.parse_patch(text)
+    if len(patches) != 1:
+        return None, ()
+    details = []
+    impact = affected(selector, patches[0], details)
+    return impact, tuple(details)
+
 def refine(selector, text, selected):
     if not selected:
         return selected
     patches = selector.parse_patch(text)
     if not patches or len(patches) > 3:
         return selected
-    edits = [affected(selector, patch) for patch in patches]
+    edits = [single_impact(selector,text)[0]] if len(patches)==1 else [affected(selector, patch) for patch in patches]
     if any(edit is None for edit in edits):
         return selected
     version, names, known, _ = observations()

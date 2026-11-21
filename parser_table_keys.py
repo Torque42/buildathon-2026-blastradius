@@ -2,6 +2,7 @@
 import ast
 import gzip
 import json
+import marshal
 from functools import lru_cache
 from pathlib import Path
 
@@ -12,10 +13,9 @@ def profile():
     record = json.loads(gzip.decompress((Path(__file__).parent/"maps/parser-table-keys.gz").read_bytes()))
     return set(record["catalog"]), record["rows"]
 
-@lru_cache(32)
-def entries(selector, path):
+def collect_entries(path, tree):
     locations = {}
-    for cls in selector.source_tree(path).body:
+    for cls in tree.body:
         if not isinstance(cls,ast.ClassDef):
             continue
         for stmt in cls.body:
@@ -38,6 +38,18 @@ def entries(selector, path):
                     body=value.body
                     locations.setdefault(body.lineno,[]).append((site,key.value,"callback",body.col_offset,body.end_col_offset))
     return locations
+
+@lru_cache(1)
+def entry_index():
+    cache=Path(__file__).parent/"cache/parser-table-entries"
+    return marshal.loads(cache.read_bytes()) if cache.is_file() else None
+
+@lru_cache(32)
+def entries(selector,path):
+    index=entry_index()
+    if index is not None:
+        return index.get(path,{})
+    return collect_entries(path,selector.source_tree(path))
 
 def refine(selector,text,selected):
     files=selector.parse_patch(text)

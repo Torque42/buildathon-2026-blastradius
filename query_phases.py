@@ -63,8 +63,7 @@ def analyze(selector,text):
     identity_swap = any(a.replace(src,dst,1)==b for src,dst in ((" is "," == "),(" is not "," != ")))
     if not (identity_swap or selector.simple_token_change(a,b)):
         return
-    details = []
-    hit = instruction_impact.affected(selector,patch,details)
+    hit, details = instruction_impact.single_impact(selector,text)
     if hit is None:
         details = literal_default(selector,path,a,b,line)
         if not details:
