@@ -758,6 +758,83 @@ def equivalent_comparison(path, old, new_tree, removed, inserted):
     return False
 
 
+def binding_names(statement):
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {statement.name}
+    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        return {n.id for target in targets for n in ast.walk(target)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    if isinstance(statement, (ast.Import, ast.ImportFrom)):
+        return {a.asname or a.name.split(".")[0] for a in statement.names}
+    return set()
+
+
+def from_module(consumer, statement):
+    if not statement.level:
+        return statement.module
+    package = consumer.removesuffix(".py").split("/")[:-1]
+    components = package[:len(package) - statement.level + 1]
+    if statement.module:
+        components.append(statement.module)
+    return ".".join(components)
+
+
+def changed_binding_tests(path, old_tree, new_tree, removed, inserted):
+    """Capture tests importing public data, and modules importing a deleted binding."""
+    edits = set(removed) | set(inserted)
+    changed = set()
+    possibly_removed = set()
+    for statement in old_tree.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if statement.lineno in removed:
+                possibly_removed.add(statement.name)
+        elif any(statement.lineno <= line <= statement.end_lineno for line in edits):
+            names = binding_names(statement)
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                changed.update(names)
+            if removed:
+                possibly_removed.update(names)
+
+    deleted = set()
+    if possibly_removed:
+        surviving = set().union(*(binding_names(stmt) for stmt in new_tree.body))
+        deleted = possibly_removed - surviving
+    if not (changed or deleted):
+        return set()
+
+    module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+    leaf = module.rsplit(".", 1)[-1]
+    affected = set()
+    for consumer, text in SRC.items():
+        if consumer == path or not consumer.endswith(".py"):
+            continue
+        names = changed | deleted if consumer.startswith("tests/") else deleted
+        if not names or (leaf not in text and "from ." not in text):
+            continue
+        if not any(name in text for name in names) and "import *" not in text:
+            continue
+        for stmt in ast.walk(source_tree(consumer)):
+            if not isinstance(stmt, ast.ImportFrom) or from_module(consumer, stmt) != module:
+                continue
+            if not any(alias.name in names or alias.name == "*" for alias in stmt.names):
+                continue
+            if consumer.startswith("tests/"):
+                if consumer not in BY_FILE:
+                    return set(ALL)
+                affected.update(BY_FILE[consumer])
+            else:
+                affected.update(importers_all(consumer))
+                pool_mask = 0
+                for mask in POOL_MAP["lines"].get(consumer, {}).values():
+                    pool_mask |= mask
+                affected.update(tests_from_pool_mask(pool_mask))
+            if affected == ALL:
+                return affected
+            break
+    return affected
+
+
 def analyze_py_source(path, f, reasons, single_file):
     old = SRC.get(path)
     if f["old"] is None:
@@ -794,7 +871,9 @@ def analyze_py_source(path, f, reasons, single_file):
         return set(ALL)
     loc = Locator(old, old_tree)
     new_members = added_class_members(loc.tree, new_tree, changed)
-    sel = set()
+    sel = changed_binding_tests(path, old_tree, new_tree, removed, inserted)
+    if sel:
+        reasons.append("imported-binding")
     if new_members:
         reasons.append("new-class-member")
         sel.update(added_member_readers(path, old, new_members))
