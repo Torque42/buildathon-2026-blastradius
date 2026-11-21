@@ -793,36 +793,55 @@ def analyze_py_source(path, f, reasons, single_file):
     return sel
 
 
+@lru_cache(maxsize=1)
+def test_module_imports():
+    """Build reverse imports among the pinned test modules, including package initializers."""
+    modules = {path[:-3].replace("/", ".").removesuffix(".__init__"): path
+               for path in SRC if path.startswith("tests/") and path.endswith(".py")}
+    reverse = {}
+    for module, path in modules.items():
+        package = module if path.endswith("/__init__.py") else module.rpartition(".")[0]
+        imported = {package}
+        for node in ast.walk(ast.parse(SRC[path])):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    parts = package.split(".")
+                    base = ".".join(parts[:len(parts) + 1 - node.level] + ([base] if base else []))
+                imported.add(base)
+                imported.update(f"{base}.{alias.name}" for alias in node.names)
+        for name in imported:
+            dependency = modules.get(name)
+            if dependency and dependency != path:
+                reverse.setdefault(dependency, set()).add(path)
+    return reverse
+
+
 @lru_cache(maxsize=None)
-def importing_test_files(provider):
-    """Find test modules that depend on a helper, including transitive imports."""
-    pending = [provider]
-    dependents = set()
+def dependent_test_numbers(path):
+    reverse = test_module_imports()
+    seen = {path}
+    pending = [path]
+    result = set()
     while pending:
-        path = pending.pop()
-        module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
-        for source, text in SRC.items():
-            if not source.startswith("tests/") or not source.endswith(".py"):
-                continue
-            if source == provider or source in dependents:
-                continue
-            if module.split(".")[-1] not in text:
-                continue
-            package = source.rsplit("/", 1)[0].replace("/", ".").split(".")
-            for node in ast.walk(source_tree(source)):
-                imported = set()
-                if isinstance(node, ast.Import):
-                    imported.update(alias.name for alias in node.names)
-                elif isinstance(node, ast.ImportFrom):
-                    prefix = package[:len(package) + 1 - node.level] if node.level else []
-                    scope = ".".join(prefix + ([node.module] if node.module else []))
-                    imported.add(scope)
-                    imported.update(scope + "." + alias.name for alias in node.names)
-                if module in imported:
-                    dependents.add(source)
-                    pending.append(source)
-                    break
-    return frozenset(dependents)
+        for importer in reverse.get(pending.pop(), ()):
+            if importer not in seen:
+                result.update(BY_FILE.get(importer, ()))
+                pending.append(importer)
+                seen.add(importer)
+    return frozenset(result)
+
+
+with (HERE / "maps" / "fixture_scopes.json").open() as stream:
+    FIXTURE_SCOPES = json.load(stream)
+
+
+@lru_cache(maxsize=None)
+def scope_tests(scope):
+    return frozenset(number for node_id, number in NUM.items()
+                     if not scope or node_id == scope or node_id.startswith((scope + "::", scope + "/")))
 
 
 def test_file_tests(path, f, reasons):
@@ -928,9 +947,10 @@ def analyze(text):
             sel |= test_file_tests(path, f, file_reasons)
             reasons.extend(file_reasons)
             if file_reasons != ["testfile-comment"]:
-                for importer in importing_test_files(path):
-                    sel.update(BY_FILE.get(importer, ()))
+                sel.update(dependent_test_numbers(path))
         elif path.startswith("tests/"):
+            for scope in FIXTURE_SCOPES.get(path, ()):
+                sel.update(scope_tests(scope))
             k = M["opens"].get(path) if f["old"] else None
             if k is not None:
                 sel |= tests_of(k)
