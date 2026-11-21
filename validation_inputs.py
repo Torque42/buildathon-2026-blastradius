@@ -39,7 +39,7 @@ def declarations(selector, path):
 
 
 def refine(selector, text, selected):
-    if not selected or not ("True" in text and "False" in text):
+    if not ("True" in text and "False" in text):
         return selected
     patches = selector.parse_patch(text)
     if len(patches) != 1:
@@ -68,7 +68,8 @@ def refine(selector, text, selected):
         bucket = readers.get(site,{})
         hits = set(bucket.get(key,())) | set(bucket.get("*",()))
         if "" in hits:
-            return selected
+            # An observed value dependency during import can fail collection.
+            return set(selector.ALL)
         keep = set(selector.tests_of(selector.M["opens"].get(path)))
         for hit in hits:
             if hit.startswith("scope:"):
