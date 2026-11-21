@@ -278,6 +278,23 @@ def pool_attribute_readers(path, parents, names):
     return tests_from_pool_mask(mask)
 
 
+@lru_cache(maxsize=1)
+def attribute_profile():
+    with gzip.open(HERE / "maps" / "observed-attributes.json.gz", "rt") as stream:
+        profile = json.load(stream)
+    return [NUM.get(test) for test in profile["tests"]], profile["slots"]
+
+
+def observed_attribute_tests(path, parents, names):
+    owner = ".".join(node.name for node in parents if isinstance(node, ast.ClassDef))
+    if not owner or not names:
+        return set()
+    numbers, slots = attribute_profile()
+    module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+    return {numbers[i] for name in names for i in slots.get(f"{module}:{owner}:{name}", ())
+            if numbers[i] is not None}
+
+
 def in_function(parents):
     for p in reversed(parents):
         if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -330,6 +347,7 @@ def stmt_tests(path, loc, line, why):
     # Attribute reads identify the defining class or module, so they do not
     # require a lexical match against other classes that share a field name.
     lexical = t & u if u else t
+    lexical.update(observed_attribute_tests(path, parents, nm))
     return lexical | pool_attribute_readers(path, parents, nm), "module-level:" + ",".join(sorted(nm))[:60]
 
 
