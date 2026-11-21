@@ -21,6 +21,7 @@ DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
 sys.path.insert(0,str(HERE))
 import query_replay
 import query_phases
+import parse_replay
 import flag_readers
 import identity_select
 import argument_reads
@@ -1836,6 +1837,7 @@ def select_tests(text):
     if reasons == ["def-header"]:
         sel=constructor_inputs.refine(selector,text,sel)
     if combined is None and "recursive-comparison" not in reasons:
+        sel = parse_replay.refine(selector, text, sel)
         retained = replay_edit.preserve(selector, text, sel)
         attempted = set()
         precise = query_phases.refine(selector, text, sel, attempted=attempted)

@@ -9,6 +9,8 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 cache = root / "cache"
 cache.mkdir(exist_ok=True)
+import lzma
+(cache/"parse-boundaries").write_bytes(lzma.decompress((root/"maps/parse-boundaries.xz").read_bytes()))
 import tarfile
 with tarfile.open(root / "maps/src.tar.xz") as archive:
     archive.extractall(cache/"pinned",filter="data")
