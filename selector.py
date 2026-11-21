@@ -252,6 +252,9 @@ def cov_range(path, a, b):
         if k is not None:
             s |= tests_of(k)
     s.update(tests_from_pool_mask(mask))
+    for scope, lines in FIXTURE_LINES.get(path, ()):
+        if any(a <= line <= b for line in lines):
+            s.update(scope_tests(scope))
     return s
 
 
@@ -938,6 +941,13 @@ def dependent_test_numbers(path):
 
 with (HERE / "maps" / "fixture_scopes.json").open() as stream:
     FIXTURE_SCOPES = json.load(stream)
+
+
+FIXTURE_LINES = {}
+with (HERE / "maps" / "fixture_lines.json").open() as stream:
+    for scope, files in json.load(stream).items():
+        for path, lines in files.items():
+            FIXTURE_LINES.setdefault(path, []).append((scope, lines))
 
 
 @lru_cache(maxsize=None)

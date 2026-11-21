@@ -18,6 +18,19 @@ class Recorder:
         self.root = str(root) + os.sep
         self.scopes = []
         self.owners = defaultdict(set)
+        self.source_lines = defaultdict(lambda: defaultdict(set))
+
+    def trace_calls(self, frame, event, arg):
+        filename = frame.f_code.co_filename
+        if event == "call" and filename.startswith(self.root + "sqlglot/"):
+            return self.trace_lines
+
+    def trace_lines(self, frame, event, arg):
+        if event == "line":
+            path = frame.f_code.co_filename[len(self.root):]
+            for scope in self.scopes:
+                self.source_lines[scope][path].add(frame.f_lineno)
+        return self.trace_lines
 
     def audit(self, event, args):
         if event != "open" or not self.scopes:
@@ -42,16 +55,25 @@ def pytest_sessionstart(session):
 def pytest_fixture_setup(fixturedef, request):
     if fixturedef.scope == "function":
         return (yield)
+    previous = sys.gettrace()
+    if not recorder.scopes:
+        sys.settrace(recorder.trace_calls)
     recorder.scopes.append(request.node.nodeid)
     try:
         return (yield)
     finally:
         recorder.scopes.pop()
+        if not recorder.scopes:
+            sys.settrace(previous)
 
 
 def pytest_sessionfinish(session, exitstatus):
     if exitstatus == 0:
         data = {path: sorted(owners) for path, owners in recorder.owners.items()}
-        Path(os.environ["BLAST_FIXTURE_OUTPUT"]).write_text(
-            json.dumps(data, sort_keys=True, indent=2) + "\n"
-        )
+        output = Path(os.environ["BLAST_FIXTURE_OUTPUT"])
+        output.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n")
+        lines = {
+            scope: {path: sorted(numbers) for path, numbers in files.items()}
+            for scope, files in recorder.source_lines.items()
+        }
+        output.with_name("fixture_lines.json").write_text(json.dumps(lines, sort_keys=True) + "\n")
