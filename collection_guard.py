@@ -16,31 +16,54 @@ def modules():
     return [p.relative_to(PIN).with_suffix("").as_posix().replace("/",".")
             for p in sorted((PIN/"tests").rglob("test_*.py"))]
 
-def build():
-    # Discover usable original test modules with exactly the stdlib available
-    # in the submitted image. Separate processes keep partial imports isolated.
-    import concurrent.futures
-    def available(name):
-        p=subprocess.run([sys.executable,"-I","-S",str(Path(__file__).resolve()),"check",name],
-                         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        return name if p.returncode==0 else None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        checks=[m for m in pool.map(available,modules()) if m]
-    if not checks:raise RuntimeError("No pristine collection modules")
+def observe(names):
     import unittest
     sys.path.insert(0,str(PIN))
-    seen={};prefix=str(PIN)+"/sqlglot/";monitor=sys.monitoring;slot=4
-    def record(code,line):
+    prefix = str(PIN) + "/sqlglot/"
+    monitor = sys.monitoring
+    slot = 4
+    seen = {}
+    def record(code, line):
         if code.co_filename.startswith(prefix):
-            path="sqlglot/"+code.co_filename[len(prefix):]
-            seen[path]=seen.get(path,0)|(1<<line)
+            path = "sqlglot/" + code.co_filename[len(prefix):]
+            seen[path] = seen.get(path, 0) | (1 << line)
         return monitor.DISABLE
-    monitor.use_tool_id(slot,"collection")
-    monitor.register_callback(slot,monitor.events.LINE,record)
-    monitor.set_events(slot,monitor.events.LINE)
-    for name in checks:importlib.import_module(name)
-    monitor.set_events(slot,0)
-    CACHE.write_bytes(marshal.dumps((checks,seen)))
+    monitor.use_tool_id(slot, "collection")
+    monitor.register_callback(slot, monitor.events.LINE, record)
+    monitor.set_events(slot, monitor.events.LINE)
+    ordered = {}
+    try:
+        for name in names:
+            seen.clear()
+            monitor.restart_events()
+            importlib.import_module(name)
+            ordered[name] = seen.copy()
+    finally:
+        monitor.set_events(slot, 0)
+    return ordered
+
+def build():
+    from concurrent.futures import ThreadPoolExecutor
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        def available(name):
+            output = Path(tmp)/name
+            run = subprocess.run([sys.executable,"-I","-S",str(Path(__file__).resolve()),
+                                  "check",name,str(output)], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            return (name, marshal.loads(output.read_bytes())) if run.returncode == 0 else None
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            separate = dict(row for row in pool.map(available, modules()) if row)
+    if not separate:
+        raise RuntimeError("No pristine collection modules")
+    # Preserve execution seen in the usual shared module cache as well.
+    ordered = observe(separate)
+    seen = {}
+    for name, files in separate.items():
+        for path, mask in ordered[name].items():
+            files[path] = files.get(path, 0) | mask
+        for path, mask in files.items():
+            seen[path] = seen.get(path, 0) | mask
+    CACHE.write_bytes(marshal.dumps((list(separate),seen,separate)))
 
 @lru_cache(1)
 def inputs():
@@ -64,7 +87,9 @@ def sources(selector,text):
 def failed(selector,text,selected):
     edits=sources(selector,text)
     if not edits:return False
-    checks,seen=inputs()
+    evidence=inputs()
+    checks,seen=evidence[:2]
+    per_module=evidence[2] if len(evidence)>2 else None
     # A patch confined to an existing expression cannot affect a clean import
     # before that expression first executes. Top-level declarations are checked.
     from replay_edit import possible_edit,Overlay
@@ -73,6 +98,23 @@ def failed(selector,text,selected):
         path,_,mask=simple
         if not mask & seen.get(path,0):return False
     if not any(path in seen for path,_ in edits):return False
+    if per_module is not None:
+        masks = {path:None for path,_ in edits}
+        if simple:
+            masks[simple[0]] = simple[2]
+        else:
+            from compound import pieces
+            for piece in pieces(selector,text):
+                part = possible_edit(selector,piece)
+                if part is not None and part[0] in masks:
+                    masks[part[0]] = part[2]
+        def affected(name):
+            files = per_module[name]
+            return any(path in files and (mask is None or bool(files[path] & mask))
+                       for path,mask in masks.items())
+        checks = [name for name in checks if affected(name)]
+        if not checks:
+            return False
     if selected and selector.worker_cost(selector.split(selected))>=selector.full_schedule()[0]:return False
     if any(n=="sqlglot" or n.startswith(("sqlglot.","tests.")) for n in sys.modules):return True
     import unittest
@@ -95,7 +137,6 @@ def failed(selector,text,selected):
 
 if __name__=="__main__":
     if sys.argv[1]=="check":
-        import unittest
-        sys.path.insert(0,str(PIN))
-        importlib.import_module(sys.argv[2])
+        name=sys.argv[2]
+        Path(sys.argv[3]).write_bytes(marshal.dumps(observe([name])[name]))
     else:build()
