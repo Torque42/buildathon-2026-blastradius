@@ -38,6 +38,7 @@ import default_inputs
 import constructor_inputs
 import lexical_inputs
 import get_inputs
+import slot_inputs
 import import_impact
 import replay_edit
 WORKER_MS = 2000
@@ -1756,44 +1757,67 @@ def covered_schedule(text, selected):
     return workers
 
 
+def select_tests(text):
+    selector = sys.modules[__name__]
+    # A complete small reader set can be scheduled immediately. Larger reader
+    # sets still benefit from the existing per-query and instruction refinements.
+    slots = slot_inputs.refine(selector, text, ALL)
+    if slots is ALL:
+        slots = None
+    dictionary = get_inputs.refine(selector, text, ALL)
+    if dictionary is ALL:
+        dictionary = None
+    lexical = lexical_inputs.refine(selector, text, ALL)
+    if lexical is ALL:
+        lexical = None
+    for label, readers in (("initial-value", slots), ("dictionary-read", dictionary), ("keyword-read", lexical)):
+        if readers is not None and len(readers) <= 32 and sum(DUR[n] for n in readers) <= WORKER_MS:
+            return import_impact.include(selector, text, readers), [label]
+    sel, reasons = analyze(text)
+    combined=compound.select(selector,text,sel)
+    if "recursive-comparison" in reasons:
+        sel=set(ALL)
+    elif combined is not None:
+        sel=combined
+    else:
+        preserve=replay_edit.preserve(selector,text,sel)
+        sel=identity_select.refine(selector,text,sel)
+        sel=flag_readers.refine(selector,text,sel)
+        sel=predicate_select.refine(selector,text,sel)
+        sel=condition_select.refine(selector,text,sel)
+        precise=query_phases.refine(selector,text,sel)
+        sel=query_replay.refine(selector,text,sel if precise is None else precise) | preserve
+    sel=default_inputs.refine(selector,text,sel,list(dict.fromkeys(reasons)))
+    sel=validation_inputs.refine(selector,text,sel)
+    sel=fixture_inputs.refine(selector,text,sel)
+    if "recursive-comparison" not in reasons:
+        sel=instruction_impact.refine(selector,text,sel)
+    sel=observed_inputs.refine(selector,text,sel)
+    sel=isolated_imports.refine(selector,text,sel)
+    if "recursive-comparison" not in reasons:
+        sel=compound.fixture_mix(selector,text,sel)
+    sel=parser_table_keys.refine(selector,text,sel)
+    sel=schema_keys.refine(selector,text,sel)
+    sel=registry_inputs.include(selector,text,sel)
+    if lexical is not None:
+        sel = lexical
+    if dictionary is not None:
+        sel = sel & dictionary
+    if slots is not None:
+        sel = sel & slots
+    if reasons == ["def-header"]:
+        sel=constructor_inputs.refine(selector,text,sel)
+    sel=import_impact.include(selector,text,sel)
+    return sel, reasons
+
+
 def main():
     total = 0
     for p in sorted((DATA / "commits").glob("*.patch")):
         text = ""
         try:
             text = p.read_text("utf-8", errors="replace")
-            sel, reasons = analyze(text)
-            selector=sys.modules[__name__]
-            combined=compound.select(selector,text,sel)
-            if "recursive-comparison" in reasons:
-                sel=set(ALL)
-            elif combined is not None:
-                sel=combined
-            else:
-                preserve=replay_edit.preserve(selector,text,sel)
-                sel=identity_select.refine(selector,text,sel)
-                sel=flag_readers.refine(selector,text,sel)
-                sel=predicate_select.refine(selector,text,sel)
-                sel=condition_select.refine(selector,text,sel)
-                precise=query_phases.refine(selector,text,sel)
-                sel=query_replay.refine(selector,text,sel if precise is None else precise) | preserve
-            sel=default_inputs.refine(selector,text,sel,list(dict.fromkeys(reasons)))
-            sel=validation_inputs.refine(selector,text,sel)
-            sel=fixture_inputs.refine(selector,text,sel)
-            if "recursive-comparison" not in reasons:
-                sel=instruction_impact.refine(selector,text,sel)
-            sel=observed_inputs.refine(selector,text,sel)
-            sel=isolated_imports.refine(selector,text,sel)
-            if "recursive-comparison" not in reasons:
-                sel=compound.fixture_mix(selector,text,sel)
-            sel=parser_table_keys.refine(selector,text,sel)
-            sel=schema_keys.refine(selector,text,sel)
-            sel=registry_inputs.include(selector,text,sel)
-            sel=lexical_inputs.refine(selector,text,sel)
-            sel=get_inputs.refine(selector,text,sel)
-            if reasons == ["def-header"]:
-                sel=constructor_inputs.refine(selector,text,sel)
-            sel=import_impact.include(selector,text,sel)
+            sel, reasons = select_tests(text)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)
