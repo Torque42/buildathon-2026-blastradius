@@ -32,6 +32,12 @@ import fixture_inputs
 import observed_inputs
 import instruction_impact
 import parser_table_keys
+import collection_guard
+import branch_select
+import comment_layers
+import function_changes
+import consumer_select
+import access_select
 import schema_keys
 import registry_inputs
 import default_inputs
@@ -107,6 +113,7 @@ def diff_path(value):
     return value
 
 
+@lru_cache(maxsize=12)
 def parse_patch(text):
     files = []
     cur = None
@@ -150,7 +157,17 @@ def parse_patch(text):
     return changes
 
 
+_applied = {}
 def apply(old, hunks):
+    key = id(old), id(hunks)
+    if key not in _applied:
+        if len(_applied) >= 24:
+            _applied.clear()
+        # Retain the objects themselves so identities cannot be reused.
+        _applied[key] = old, hunks, apply_hunks(old, hunks)
+    return _applied[key][2]
+
+def apply_hunks(old, hunks):
     """Return new text, list of changed old line numbers, list of old insertion points."""
     ol = old.split("\n") if old is not None else []
     out = []
@@ -1785,8 +1802,7 @@ def select_tests(text):
         sel=flag_readers.refine(selector,text,sel)
         sel=predicate_select.refine(selector,text,sel)
         sel=condition_select.refine(selector,text,sel)
-        precise=query_phases.refine(selector,text,sel)
-        sel=query_replay.refine(selector,text,sel if precise is None else precise) | preserve
+        sel = branch_select.refine(selector, text, sel) | preserve
     sel=default_inputs.refine(selector,text,sel,list(dict.fromkeys(reasons)))
     sel=validation_inputs.refine(selector,text,sel)
     sel=fixture_inputs.refine(selector,text,sel)
@@ -1799,6 +1815,10 @@ def select_tests(text):
     sel=parser_table_keys.refine(selector,text,sel)
     sel=schema_keys.refine(selector,text,sel)
     sel=registry_inputs.include(selector,text,sel)
+    if "recursive-comparison" not in reasons:
+        sel = function_changes.refine(selector, text, sel)
+    sel = consumer_select.refine(selector, text, sel)
+    sel = access_select.refine(selector, text, sel)
     if lexical is not None:
         sel = lexical
     if dictionary is not None:
@@ -1807,17 +1827,27 @@ def select_tests(text):
         sel = sel & slots
     if reasons == ["def-header"]:
         sel=constructor_inputs.refine(selector,text,sel)
-    sel=import_impact.include(selector,text,sel)
-    return sel, reasons
+    if combined is None and "recursive-comparison" not in reasons:
+        retained = replay_edit.preserve(selector, text, sel)
+        precise = query_phases.refine(selector, text, sel)
+        sel = query_replay.refine(selector, text, sel if precise is None else precise) | retained
+    return import_impact.include(selector, text, sel), reasons
 
 
 def main():
     total = 0
     for p in sorted((DATA / "commits").glob("*.patch")):
         text = ""
+        _applied.clear()
         try:
             text = p.read_text("utf-8", errors="replace")
+            selector = sys.modules[__name__]
+            text, comment_readers = comment_layers.simplify(selector, text)
             sel, reasons = select_tests(text)
+            sel = sel | comment_readers
+            if collection_guard.failed(selector, text, sel):
+                sel = set(ALL)
+                reasons.append("collection-failed")
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)

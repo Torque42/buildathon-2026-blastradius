@@ -2,9 +2,8 @@
 # committed maps (maps/), so the build needs no network beyond this image.
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 ENV PYTHONDONTWRITEBYTECODE=1
-COPY slot_inputs.py get_inputs.py import_impact.py lexical_inputs.py constructor_inputs.py /app/
-COPY parser_table_keys.py query_phases.py schema_keys.py registry_inputs.py instruction_impact.py observed_inputs.py default_inputs.py fixture_parse.py fixture_inputs.py validation_inputs.py isolated_imports.py selector.py identity_select.py compound.py conditions.py condition_select.py predicates.py predicate_select.py flag_readers.py replay_edit.py replay_state.py query_replay.py /app/
+COPY *.py /app/
 COPY maps/ /app/maps/
 COPY tools/cache_maps.py tools/cache_replay.py tools/cache_import_impacts.py /app/tools/
-RUN python -I /app/tools/cache_maps.py && python -I /app/tools/cache_replay.py && python -I /app/tools/cache_import_impacts.py
+RUN python -I /app/tools/cache_maps.py && python -I /app/tools/cache_replay.py && python -I /app/tools/cache_import_impacts.py && python -m compileall -q --invalidation-mode unchecked-hash /app/cache/pinned /app/*.py && python -I -S /app/collection_guard.py build
 CMD ["python", "-I", "/app/selector.py"]

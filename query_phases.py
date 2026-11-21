@@ -6,6 +6,7 @@ import marshal
 from functools import lru_cache
 from pathlib import Path
 
+import stage_decisions
 import default_inputs
 import instruction_impact
 import query_replay
@@ -73,7 +74,7 @@ def analyze(selector,text):
         inspect_mask = hit[2]
     return path, after, details, inspect_mask
 
-def refine(selector,text,selected):
+def refine(selector,text,selected,forbidden=()):
     ids = {k:selector.NUM[name] for k,name in query_replay.IDS.items() if selector.NUM.get(name) in selected}
     if not ids:
         return None
@@ -115,6 +116,7 @@ def refine(selector,text,selected):
                     seen |= visits
             if wanted & full & ~seen:
                 blocked.add(kind)
+    selected_stages &= ~stage_decisions.unchanged_stages(selector,text,labels,selected_stages)
     if selected_stages & stage_kinds["init"]:
         return None
     jobs = {kind:{} for kind in ids if kind not in blocked and ids[kind] not in protected}
@@ -155,6 +157,6 @@ def refine(selector,text,selected):
                     selector.worker_cost(selector.split(selected-safe-{ids[k] for k in pending})))/1000
         if possible >= 0.8:
             line_mask = inspect_mask
-            verdict = query_replay.run_checks([(path,source,line_mask)],pending,min(5.0,possible*0.42),())
+            verdict = query_replay.run_checks([(path,source,line_mask)],pending,min(5.0,possible*0.42),forbidden)
             safe.update(ids[k] for k in verdict)
     return selected-safe
