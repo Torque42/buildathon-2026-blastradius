@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import gzip
 import json
 import tarfile
@@ -31,4 +32,5 @@ with tarfile.open(maps / "src.tar.xz") as archive:
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                         writes[arg.value].add(entry.name)
 (maps / "source-index.json.gz").write_bytes(gzip.compress(json.dumps([sorted(bases), {field: sorted(paths) for field, paths in writes.items()}]).encode(), mtime=0))
-(maps / "sources.json.gz").write_bytes(gzip.compress(json.dumps(sources, ensure_ascii=False).encode(), mtime=0))
+manifest = {path: hashlib.sha256(source.encode("utf-8")).hexdigest() for path, source in sources.items()}
+(maps / "source-manifest.json").write_text(json.dumps(manifest, separators=(",", ":")))
