@@ -1858,7 +1858,7 @@ def main():
             sel, reasons = select_tests(text)
             sel = sel | comment_readers
             if collection_guard.failed(selector, text, sel):
-                sel = set(ALL)
+                sel = collection_guard.include_failed(selector, text, sel)
                 reasons.append("collection-failed")
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]

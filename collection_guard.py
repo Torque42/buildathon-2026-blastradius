@@ -135,6 +135,38 @@ def failed(selector,text,selected):
     _,status=os.waitpid(pid,0)
     return status!=0
 
+@lru_cache(1)
+def pytest_collection():
+    import gzip
+    catalog, outside, files = marshal.loads(gzip.decompress((ROOT/"maps/pytest-collection.gz").read_bytes()))
+    return set(catalog), outside, files
+
+
+def include_failed(selector, text, selected):
+    """Preserve every module that could encounter the first altered expression during collection."""
+    from replay_edit import possible_edit
+    edit = possible_edit(selector, text)
+    if edit is None:
+        return set(selector.ALL)
+    path, _, mask = edit
+    import import_impact
+    # A failed package initializer can affect later imports through shared globals.
+    # Only use file-level attribution when no package initialization reached this edit.
+    for line in import_impact.profile()[0].get(path, {}):
+        if mask & (1 << line):
+            return set(selector.ALL)
+    catalog, outside, files = pytest_collection()
+    if catalog != set(selector.NUM) or set(files) != set(selector.BY_FILE) or outside.get(path, 0) & mask:
+        return set(selector.ALL)
+    affected = set()
+    for name, coverage in files.items():
+        if mask & coverage.get(path,0):
+            affected.update(selector.BY_FILE[name])
+            affected.update(selector.dependent_test_numbers(name))
+    # An observed import failure with no matching complete-suite evidence is unexplained.
+    return selected | affected if affected else set(selector.ALL)
+
+
 if __name__=="__main__":
     if sys.argv[1]=="check":
         name=sys.argv[2]
