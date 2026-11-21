@@ -959,11 +959,25 @@ ZERO_COST_TESTS = {n for n in ALL if DUR[n] == 0}
 TEST_FILE = {t["number"]: t["file"] for t in TJ}
 
 
+def worker_cost(workers):
+    peak = max((sum(DUR[n] for n in worker) for worker in workers), default=0)
+    return peak + WORKER_MS * len(workers)
+
+
+@lru_cache(maxsize=1)
+def full_schedule():
+    workers = split(ALL)
+    return worker_cost(workers), workers
+
+
 def covered_schedule(text, selected):
-    """Fill idle worker capacity while preserving the selected tests and their assignments."""
+    """Prefer full coverage at equal cost, then fill idle capacity in the chosen schedule."""
     workers = split(selected)
     if not workers or len(selected) == len(ALL):
         return workers
+    full_cost, all_workers = full_schedule()
+    if full_cost <= worker_cost(workers):
+        return all_workers
     loads = [sum(DUR[n] for n in w) for w in workers]
     peak = max(loads)
     remaining = [peak - load for load in loads]
@@ -1017,7 +1031,7 @@ def main():
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)
-        cost = (max(sum(DUR[n] for n in w) for w in workers) + WORKER_MS * len(workers)) if workers else 0
+        cost = worker_cost(workers)
         total += cost
         log(f"{p.stem}: {sum(map(len, workers))} tests, cost {cost/1000:.1f}s, {sorted(set(reasons))[:6]}")
         print(json.dumps({"commit": p.stem, "workers": workers}, separators=(",", ":")))
