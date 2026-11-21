@@ -434,23 +434,82 @@ def analyze(text):
 
 
 # ---------------------------------------------------------------- splitting
+def improve_split(items, count, lower, best_peak, budget):
+    """Find a smaller peak by branch and bound, up to budget assignment nodes."""
+    loads = [0] * count
+    bins = [[] for _ in loads]
+    result = None
+
+    def search(pos):
+        nonlocal best_peak, result, budget
+        budget -= 1
+        if pos == len(items):
+            peak = max(loads)
+            if peak < best_peak:
+                best_peak = peak
+                result = [worker.copy() for worker in bins]
+            return
+
+        test = items[pos]
+        duration = DUR[test]
+        seen_loads = set()
+        for i in sorted(range(count), key=loads.__getitem__):
+            if budget <= 0 or best_peak == lower:
+                break
+            load = loads[i]
+            # Equal loads have interchangeable completions, even with different tests.
+            if load in seen_loads or load + duration >= best_peak:
+                continue
+            seen_loads.add(load)
+            loads[i] += duration
+            bins[i].append(test)
+            search(pos + 1)
+            bins[i].pop()
+            loads[i] = load
+
+    search(0)
+    return result, best_peak, budget
+
+
 def split(sel):
-    items = sorted(sel, key=lambda n: -DUR[n])
+    if not sel:
+        return []
+    items = sorted(sel, key=DUR.__getitem__, reverse=True)
     total = sum(DUR[n] for n in items)
-    best = None
-    for w in range(1, min(8, len(items)) + 1):
-        loads = [0] * w
-        bins = [[] for _ in range(w)]
-        for n in items:
-            i = loads.index(min(loads))
-            loads[i] += DUR[n]
-            bins[i].append(n)
-        cost = max(loads) + WORKER_MS * w
-        if best is None or cost < best[0]:
-            best = (cost, bins)
-        if total / (w + 1) + WORKER_MS * (w + 1) > best[0] and DUR[items[0]] + WORKER_MS * (w + 1) > best[0]:
+    longest = DUR[items[0]]
+    candidates = []
+    for count in range(1, min(8, len(items)) + 1):
+        peak_bound = max(longest, (total + count - 1) // count)
+        candidates.append((peak_bound + WORKER_MS * count, count))
+    candidates.sort()
+
+    best_cost = total + WORKER_MS
+    best = [items]
+    for bound, count in candidates:
+        if bound >= best_cost:
             break
-    return best[1] if best else []
+        loads = [0] * count
+        bins = [[] for _ in loads]
+        for test in items:
+            i = loads.index(min(loads))
+            loads[i] += DUR[test]
+            bins[i].append(test)
+        cost = max(loads) + WORKER_MS * count
+        if cost < best_cost:
+            best_cost, best = cost, bins
+
+    # The bound often proves optimality immediately. Cap work on unresolved
+    # patches because the competition charges CPU time as well as worker time.
+    if len(items) <= 48:
+        budget = 4000
+        for bound, count in candidates:
+            if bound >= best_cost or budget <= 0:
+                break
+            fee = WORKER_MS * count
+            bins, peak, budget = improve_split(items, count, bound - fee, best_cost - fee, budget)
+            if bins is not None:
+                best_cost, best = peak + fee, bins
+    return best
 
 
 def main():
