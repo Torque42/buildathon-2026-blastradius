@@ -12,6 +12,7 @@ import re
 import sys
 import tarfile
 import tokenize
+from functools import lru_cache
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -52,6 +53,22 @@ def tests_of(setidx):
 
 # tests in tests.json that the coverage map never saw: always treat as unknown
 UNMAPPED = ALL - {n for n in IX2NUM if n is not None}
+
+pool_map_path = HERE / "maps" / "pool.json.gz"
+if pool_map_path.is_file():
+    with gzip.open(pool_map_path, "rt") as stream:
+        POOL_MAP = json.load(stream)
+else:
+    POOL_MAP = {"tests": [], "lines": {}, "attributes": {}}
+POOL_NUMBERS = [NUM.get(node_id) for node_id in POOL_MAP["tests"]]
+
+
+@lru_cache(maxsize=2048)
+def tests_from_pool_mask(mask):
+    return frozenset(
+        test for bit, test in enumerate(POOL_NUMBERS)
+        if test is not None and mask & (1 << bit)
+    )
 
 
 # ---------------------------------------------------------------- patch parsing
@@ -178,11 +195,16 @@ def file_lines(path):
 
 def cov_range(path, a, b):
     fl = file_lines(path)
+    pool_lines = POOL_MAP["lines"].get(path, {})
+    mask = 0
     s = set()
     for ln in range(a, b + 1):
-        k = fl.get(str(ln))
+        key = str(ln)
+        mask |= pool_lines.get(key, 0)
+        k = fl.get(key)
         if k is not None:
             s |= tests_of(k)
+    s.update(tests_from_pool_mask(mask))
     return s
 
 
@@ -195,6 +217,15 @@ def importers_all(path):
     if path in M["collect"]:
         return set(ALL)
     return users(path) | UNMAPPED
+
+
+def pool_attribute_readers(path, parents, names):
+    module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+    owner = ".".join(parent.name for parent in parents if isinstance(parent, ast.ClassDef))
+    mask = 0
+    for name in names:
+        mask |= POOL_MAP["attributes"].get(f"{module}:{owner}:{name}", 0)
+    return tests_from_pool_mask(mask)
 
 
 def in_function(parents):
@@ -246,7 +277,10 @@ def stmt_tests(path, loc, line, why):
     for x in nm:
         t |= tests_of(M["names"].get(x))
     u = users(path)
-    return (t & u) | (t if not u else set()), "module-level:" + ",".join(sorted(nm))[:60]
+    # Attribute reads identify the defining class or module, so they do not
+    # require a lexical match against other classes that share a field name.
+    lexical = t & u if u else t
+    return lexical | pool_attribute_readers(path, parents, nm), "module-level:" + ",".join(sorted(nm))[:60]
 
 
 def only_comments(old, new, removed, inserted):
@@ -391,7 +425,7 @@ def pool_tests():
     return result
 
 
-POOL_TESTS = pool_tests()
+UNTRACED_POOL_TESTS = pool_tests().difference(POOL_NUMBERS)
 
 
 def analyze(text):
@@ -404,7 +438,7 @@ def analyze(text):
             got = analyze_py_source(path, f, file_reasons)
             reasons.extend(file_reasons)
             if file_reasons != ["comment-only"]:
-                got |= POOL_TESTS | UNMAPPED
+                got |= UNTRACED_POOL_TESTS | UNMAPPED
             sel |= got
             if path.startswith("sqlglot/typing/") and "comment-only" not in file_reasons:
                 sel |= set(BY_FILE.get("tests/test_typing.py", []))
