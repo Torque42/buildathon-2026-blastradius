@@ -1032,17 +1032,72 @@ def split(sel):
     return best
 
 
+# A worker can carry more tests while it waits for the busiest worker.
+ZERO_COST_TESTS = {n for n in ALL if DUR[n] == 0}
+TEST_FILE = {t["number"]: t["file"] for t in TJ}
+
+
+def covered_schedule(text, selected):
+    """Fill idle worker capacity while preserving the selected tests and their assignments."""
+    workers = split(selected)
+    if not workers or len(selected) == len(ALL):
+        return workers
+    loads = [sum(DUR[n] for n in w) for w in workers]
+    peak = max(loads)
+    remaining = [peak - load for load in loads]
+    workers[0].extend(sorted(ZERO_COST_TESTS - selected))
+    if any(remaining):
+        file_users = set()
+        related_files = {TEST_FILE[t] for t in selected - UNMAPPED}
+        symbol_readers = set()
+        for patch in parse_patch(text):
+            path = patch["old"] or patch["new"]
+            if not path:
+                continue
+            if path.startswith("sqlglot/"):
+                file_users.update(users(path))
+            for hunk in patch["hunks"]:
+                for line in hunk["lines"]:
+                    if line.startswith(("+", "-")):
+                        for name in re.findall(r"[A-Za-z_]\w*", line[1:]):
+                            if len(name) > 2:
+                                symbol_readers.update(tests_of(M["names"].get(name)))
+
+        def rank(n):
+            file_hit = n in file_users
+            symbol_hit = n in symbol_readers
+            return (not (file_hit and symbol_hit), not file_hit, not symbol_hit,
+                    TEST_FILE[n] not in related_files, DUR[n], n)
+
+        largest_gap = max(remaining)
+        possible = [n for n in ALL - selected if 0 < DUR[n] <= largest_gap]
+        for n in sorted(possible, key=rank):
+            size = DUR[n]
+            if size > largest_gap:
+                continue
+            worker = min((i for i, gap in enumerate(remaining) if gap >= size),
+                         key=remaining.__getitem__)
+            workers[worker].append(n)
+            remaining[worker] -= size
+            largest_gap = max(remaining)
+            if not largest_gap:
+                break
+    return workers
+
+
 def main():
     total = 0
     for p in sorted((DATA / "commits").glob("*.patch")):
+        text = ""
         try:
-            sel, reasons = analyze(p.read_text("utf-8", errors="replace"))
+            text = p.read_text("utf-8", errors="replace")
+            sel, reasons = analyze(text)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
-        workers = split(sel) if sel else []
+        workers = covered_schedule(text, sel)
         cost = (max(sum(DUR[n] for n in w) for w in workers) + WORKER_MS * len(workers)) if workers else 0
         total += cost
-        log(f"{p.stem}: {len(sel)} tests, cost {cost/1000:.1f}s, {sorted(set(reasons))[:6]}")
+        log(f"{p.stem}: {sum(map(len, workers))} tests, cost {cost/1000:.1f}s, {sorted(set(reasons))[:6]}")
         print(json.dumps({"commit": p.stem, "workers": workers}, separators=(",", ":")))
     log(f"estimated simulated total {total/1000:.1f}s")
 
