@@ -7,6 +7,70 @@ def pieces(selector,text):
     pieces=[text[m.start():(matches[i+1].start() if i+1<len(matches) else len(text))] for i,m in enumerate(matches)]
     return pieces if 1<len(pieces)<=5 else []
 
+
+def first_readers(selector, text, selected):
+    """An unchanged test cannot diverge before it observes at least one edited input."""
+    import argument_reads
+    import collection_guard
+    import fixture_inputs
+    import flag_readers
+    import import_impact
+    import instruction_impact
+    import slot_inputs
+    import validation_inputs
+
+    parts = pieces(selector, text)
+    if not selected or not parts:
+        return selected
+    union = set()
+    seen = set()
+    for piece in parts:
+        patches = selector.parse_patch(piece)
+        if len(patches) != 1:
+            return selected
+        patch = patches[0]
+        path = patch["old"]
+        if not path or path in seen or path != patch["new"]:
+            return selected
+        seen.add(path)
+        opens = selector.tests_of(selector.M["opens"].get(path))
+        opens.update(n for n, (files, _) in selector.EXTRA.items() if path in files)
+        if path.startswith("tests/fixtures/") and path.endswith(".sql"):
+            rows = fixture_inputs.profiles()[0]["readers"].get(path)
+            if rows is None:
+                return selected
+            contexts = set().union(*(set(ids) for ids in rows.values()))
+            keep = fixture_inputs.expand(selector, contexts) | selector.analyze(piece)[0] | opens
+        elif path in selector.SRC and path.startswith("sqlglot/"):
+            if path in selector.profile()["source_reads"]:
+                return selected
+            keep = argument_reads.match(selector, piece)
+            if keep is None:
+                keep = slot_inputs.refine(selector, piece, selector.ALL)
+            if keep is selector.ALL:
+                keep = validation_inputs.refine(selector, piece, selector.ALL)
+            if keep is selector.ALL:
+                keep = flag_readers.refine(selector, piece, selector.ALL)
+            if keep is selector.ALL:
+                impact, _ = instruction_impact.single_impact(selector, piece)
+                if impact is None:
+                    return selected
+                # Import-time reads may feed shared module state before a test
+                # starts. Keep the wider selection when the body is reached then.
+                body = impact[2]
+                cold = collection_guard.inputs()[1].get(path, 0)
+                lines = import_impact.profile()[0].get(path, {})
+                if body & cold or any(body & (1 << line) for line in lines):
+                    return selected
+                keep = instruction_impact.refine(selector, piece, selector.ALL)
+            keep = import_impact.include(selector, piece, keep) | opens
+        else:
+            return selected
+        union.update(keep)
+        if selected <= union:
+            return selected
+    return selected & union
+
 def select(selector,text,default):
     from replay_edit import possible_edit,preserve
     import query_replay,flag_readers,predicate_select,condition_select

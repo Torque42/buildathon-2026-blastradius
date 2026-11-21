@@ -1819,6 +1819,7 @@ def select_tests(text):
     sel=isolated_imports.refine(selector,text,sel)
     if "recursive-comparison" not in reasons:
         sel=compound.fixture_mix(selector,text,sel)
+        sel=compound.first_readers(selector,text,sel)
     sel=parser_table_keys.refine(selector,text,sel)
     sel=schema_keys.refine(selector,text,sel)
     sel=registry_inputs.include(selector,text,sel)
