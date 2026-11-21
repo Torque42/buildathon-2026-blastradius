@@ -19,6 +19,14 @@ errors introduced by a patch, and selects readers of newly added class members.
 The receiver map records which concrete classes reached inherited methods.
 Regenerate it with the same pinned source and catalog using
 `python tools/build_receiver_map.py /path/to/pinned-sqlglot /path/to/sample`.
-For an isolated comparison change it can rule out affected execution when the
-pinned definitions and assignments establish equivalent comparison behavior
-under their declared types. Tests with unknown coverage remain selected.
+
+Class attribute reads recorded across the pristine test suite identify callers
+that use a setting through an inherited implementation. Regenerate that map with
+`python tools/build_attribute_profile.py /path/to/pinned-sqlglot`. The pytest
+plugin in `tools/build_fixture_scopes.py` records data files and source lines used
+by shared setup so every test in the affected scope is eligible.
+
+Comparison edits retain their ordinary coverage selections. A detected module
+load failure can select the entire catalog. Once the selected tests are assigned
+to workers, idle capacity is filled with additional tests up to the busiest
+worker's original load.
