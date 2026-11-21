@@ -82,8 +82,11 @@ def fixture_mix(selector, text, selected):
     possible = selected - protected_inputs
     # If both inputs differ, keep every pristine fixture reader. Other tests
     # can observe their first changed input only through the source edit.
-    import identity_select, lexical_inputs, get_inputs, slot_inputs
+    import equality_reads, identity_select, lexical_inputs, get_inputs, slot_inputs
     reduced = identity_select.refine(selector, code, possible) & possible
+    equality = equality_reads.match(selector, code)
+    if equality is not None:
+        reduced &= equality
     reduced = instruction_impact.refine(selector, code, reduced)
     reduced = slot_inputs.refine(selector, code, reduced)
     reduced = get_inputs.refine(selector, code, reduced)
