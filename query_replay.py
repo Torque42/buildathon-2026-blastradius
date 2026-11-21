@@ -53,13 +53,18 @@ def refine_edits(selector,edits,selected,forbidden=()):
     needed={key:work for key,work in queries.items() if work}
     if needed:
         budget=min(5.0,possible*0.42)
-        try:
-            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([[(path,new,hex(mask)) for path,new,mask in edits],needed,budget,forbidden]).encode(),capture_output=True,timeout=budget*2+1)
-            output=result.stdout
-        except subprocess.TimeoutExpired as exc:
-            output=exc.stdout or b""
-        safe.update(choices[k] for k in output.decode(errors="replace").splitlines() if k in needed)
+        safe.update(choices[k] for k in run_checks(edits, needed, budget, forbidden))
     return selected-safe
+
+def run_checks(edits, needed, budget, forbidden):
+    payload = [[(path, source, hex(mask)) for path, source, mask in edits], needed, budget, forbidden]
+    try:
+        result = subprocess.run([sys.executable, "-I", str(HERE/"query_replay.py")],
+                                input=json.dumps(payload).encode(), capture_output=True, timeout=budget*2+1)
+        output = result.stdout
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or b""
+    return set(output.decode(errors="replace").splitlines()) & set(needed)
 
 
 def restore(label):
@@ -97,12 +102,12 @@ def rule_block(start,size):
         stream.seek(start)
         return marshal.loads(lzma.decompress(stream.read(size)))
 
-def replay_rules(case,edits):
+def replay_rules(case,edits,rule_hits=None):
     from replay_state import digest
     _,bits,_=profile()
     changed=None
-    for key,expected,coverage in case["rules"]:
-        if changed is None and not any(path in coverage and bits[coverage[path]]&mask for path,_,mask in edits):
+    for i,(key,expected,coverage) in enumerate(case["rules"]):
+        if changed is None and not (i in rule_hits if rule_hits is not None else any(path in coverage and bits[coverage[path]]&mask for path,_,mask in edits)):
             continue
         start,size,i=rule_index()[key]
         cached=HERE/"cache"/"rules"/f"{start}-{i}"
@@ -112,7 +117,7 @@ def replay_rules(case,edits):
         changed=None if digest(result,())==expected else result
     return changed
 
-def verify_query(kind,case,stages,edits):
+def verify_query(kind,case,stages,edits,precise=False,rule_hits=None):
     from sqlglot import parse_one,transpile,find_tables
     from sqlglot import executor
     from sqlglot.optimizer import optimize
@@ -137,8 +142,12 @@ def verify_query(kind,case,stages,edits):
     if opt_required and not prepare:
         _,bits,_=profile()
         outer=case.get("outer",{})
-        if not parse_changed and all(path.startswith("sqlglot/optimizer/") or not any(path in case.get(st,{}) and bits[case[st][path]]&mask for st in ("optimize",)) for path,_,mask in edits) and "rules" in case and not any(path in outer and bits[outer[path]]&mask for path,_,mask in edits):
-            optimized=replay_rules(case,edits)
+        if precise:
+            use_rules = rule_hits is not None
+        else:
+            use_rules = all(path.startswith("sqlglot/optimizer/") or not any(path in case.get(st,{}) and bits[case[st][path]]&mask for st in ("optimize",)) for path,_,mask in edits) and "rules" in case and not any(path in outer and bits[outer[path]]&mask for path,_,mask in edits)
+        if not parse_changed and use_rules:
+            optimized=replay_rules(case,edits,rule_hits)
             downstream|=optimized is not None
         else:
             if expr is None:expr=restore(case["parse_input"])
@@ -188,10 +197,11 @@ def run():
     signal.setitimer(signal.ITIMER_PROF,budget)
     end=time.process_time()+budget
     for kind,rows in work.items():
-        for i,stages in rows:
+        for request in rows:
+            i,stages = request[:2]
             if time.process_time()>end:return
             try:
-                if not verify_query(kind,data[kind][i],stages,edits):break
+                if not verify_query(kind,data[kind][i],stages,edits,len(request)==3,request[2] if len(request)==3 else None):break
             except Exception:
                 break
         else:

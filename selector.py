@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
 sys.path.insert(0,str(HERE))
 import query_replay
+import query_phases
 import flag_readers
 import identity_select
 import predicate_select
@@ -1769,7 +1770,8 @@ def main():
                 sel=flag_readers.refine(selector,text,sel)
                 sel=predicate_select.refine(selector,text,sel)
                 sel=condition_select.refine(selector,text,sel)
-                sel=query_replay.refine(selector,text,sel) | preserve
+                precise=query_phases.refine(selector,text,sel)
+                sel=query_replay.refine(selector,text,sel if precise is None else precise) | preserve
             sel=default_inputs.refine(selector,text,sel,list(dict.fromkeys(reasons)))
             sel=validation_inputs.refine(selector,text,sel)
             sel=fixture_inputs.refine(selector,text,sel)

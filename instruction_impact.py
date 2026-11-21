@@ -84,7 +84,7 @@ def offset_mask(before, after):
                 mask |= 1
     return mask
 
-def affected(selector, patch):
+def affected(selector, patch, details=None):
     path = patch["old"]
     if not path or path != patch["new"] or not path.startswith("sqlglot/") or path not in selector.SRC:
         return None
@@ -130,6 +130,8 @@ def affected(selector, patch):
         identifier = (a.co_qualname, a.co_firstlineno, hashlib.blake2s(a.co_code,digest_size=12).digest())
         if identifier not in records:
             return None
+        if details is not None:
+            details.append((identifier, wanted))
         for member, groups in records.items():
             if member[:2] != identifier[:2]:
                 continue
