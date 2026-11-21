@@ -74,9 +74,19 @@ def fixture_mix(selector, text, selected):
         return selected
     code = source[0]
     edit = possible_edit(selector, code)
+    import access_select, branch_select, consumer_select, query_phases
+    for path in fixtures:
+        subscribers = fixture_inputs.profiles()[0]["readers"][path]
+        fixture_tests.update(fixture_inputs.expand(selector, set().union(*(set(ids) for ids in subscribers.values()))))
+    protected_inputs = selected & fixture_tests
+    possible = selected - protected_inputs
+    reduced = instruction_impact.refine(selector, code, possible)
+    reduced = access_select.refine(selector, code, reduced)
+    reduced = consumer_select.refine(selector, code, reduced)
+    reduced = branch_select.refine(selector, code, reduced)
+    result = reduced | protected_inputs
     if not edit:
-        return selected
-    result = instruction_impact.refine(selector, code, selected) | (selected & fixture_tests)
+        return result
     cold_reads = json.loads((Path(__file__).parent / "maps/tpc-fixture-paths.json").read_bytes())
     eligible = {selector.NUM[node] for node, paths in cold_reads.items()
                 if node in selector.NUM and not fixtures.intersection(paths)} & result
@@ -84,6 +94,8 @@ def fixture_mix(selector, text, selected):
         # Keep the full selection when estimating whether the replay pays off.
         # Only explicitly traced executor tests with no reads of these fixtures qualify.
         protected = preserve(selector, code, result)
-        after = query_replay.refine_edits(selector, [edit], result, forbidden=sorted(fixtures))
+        precise = query_phases.refine(selector, code, result, forbidden=sorted(fixtures))
+        current = result if precise is None else result - (eligible - precise - protected)
+        after = query_replay.refine_edits(selector, [edit], current, forbidden=sorted(fixtures))
         result -= eligible - after - protected
     return result

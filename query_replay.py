@@ -7,6 +7,8 @@ import marshal
 import lzma
 import importlib
 import pickle
+import os
+import select
 import signal
 import subprocess
 import sys
@@ -57,6 +59,13 @@ def refine_edits(selector,edits,selected,forbidden=()):
     return selected-safe
 
 def run_checks(edits, needed, budget, forbidden):
+    # The selector imports no SQLGlot code. Forking here shares immutable pin
+    # measurements while each patch still imports its own completely fresh package.
+    if hasattr(os, "fork") and not any(n == "sqlglot" or n.startswith("sqlglot.") for n in sys.modules):
+        try:
+            return fork_checks(edits, needed, budget, forbidden)
+        except OSError:
+            pass
     payload = [[(path, source, hex(mask)) for path, source, mask in edits], needed, budget, forbidden]
     try:
         result = subprocess.run([sys.executable, "-I", str(HERE/"query_replay.py")],
@@ -65,6 +74,43 @@ def run_checks(edits, needed, budget, forbidden):
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or b""
     return set(output.decode(errors="replace").splitlines()) & set(needed)
+
+
+def fork_checks(edits, work, budget, forbidden):
+    rd, wr = os.pipe()
+    try:
+        pid = os.fork()
+    except OSError:
+        os.close(rd)
+        os.close(wr)
+        raise
+    if pid == 0:
+        try:
+            os.close(rd)
+            with open(os.devnull, "wb") as sink:
+                os.dup2(sink.fileno(), 1)
+                os.dup2(sink.fileno(), 2)
+            check_jobs(edits, work, budget, forbidden,
+                       lambda name: os.write(wr, (name+"\n").encode()))
+        finally:
+            os._exit(0)
+    os.close(wr)
+    buf = bytearray()
+    end = time.monotonic() + budget*2+1
+    try:
+        while True:
+            remaining = end-time.monotonic()
+            if remaining <= 0 or not select.select([rd], [], [], remaining)[0]:
+                os.kill(pid, signal.SIGKILL)
+                break
+            chunk = os.read(rd, 256)
+            if not chunk:
+                break
+            buf.extend(chunk)
+    finally:
+        os.close(rd)
+        os.waitpid(pid, 0)
+    return set(buf.decode().splitlines()) & set(work)
 
 
 def restore(label):
@@ -175,8 +221,8 @@ def verify_query(kind,case,stages,edits,precise=False,rule_hits=None):
         executor.optimize=original
 
 
-def run():
-    encoded,work,budget,forbidden=json.load(sys.stdin)
+def check_jobs(edits,work,budget,forbidden,report):
+    import unittest  # The pinned expression library reads this flag during import.
     opened = set()
     if forbidden:
         import os
@@ -187,7 +233,6 @@ def run():
                 if path.endswith(suffixes):
                     opened.add(path)
         sys.addaudithook(record)
-    edits=[(path,new,int(mask,16)) for path,new,mask in encoded]
     root=HERE/"cache"/"pinned"
     sys.path[:0]=[str(HERE),str(root)]
     from replay_edit import Overlay
@@ -206,7 +251,9 @@ def run():
                 break
         else:
             if not opened:
-                print(kind,flush=True)
+                report(kind)
 
 if __name__=="__main__":
-    run()
+    encoded,work,budget,forbidden=json.load(sys.stdin)
+    edits=[(path,new,int(mask,16)) for path,new,mask in encoded]
+    check_jobs(edits,work,budget,forbidden,lambda kind: print(kind,flush=True))

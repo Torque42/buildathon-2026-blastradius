@@ -137,3 +137,22 @@ import flag_readers
 flag_slots={path:flag_readers.source_slots(selector,path) for path in selector.SRC if path.startswith(("sqlglot/dialects/","sqlglot/parsers/","sqlglot/generators/")) and path.endswith(".py")}
 with (cache/"flag-slots").open("wb") as stream:
     marshal.dump({p:{l:(*v[:-1],v[-1].__name__) for l,v in rows.items()} for p,rows in flag_slots.items()},stream)
+
+from consumer_sites import scan as consumer_sites
+consumer_index = {}
+for path in selector.SRC:
+    if not path.startswith("sqlglot/") or not path.endswith(".py"):
+        continue
+    rows = {}
+    for line, *spec in consumer_sites(path, selector.source_tree(path)):
+        rows.setdefault(line, []).append(spec)
+    if rows:
+        consumer_index[path] = rows
+(cache/"consumer-sites").write_bytes(marshal.dumps(consumer_index))
+
+from access_sites import entries as access_entries
+access_index = {path: access_entries(path,selector.source_tree(path)) for path in selector.SRC
+                if path.startswith("sqlglot/") and path.endswith(".py")}
+(cache/"access-sites").write_bytes(marshal.dumps(access_index))
+from consumer_select import lexer_guards
+(cache/"lexer-guards").write_bytes(marshal.dumps(lexer_guards(selector)))
