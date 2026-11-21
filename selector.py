@@ -30,6 +30,7 @@ import validation_inputs
 import fixture_inputs
 import observed_inputs
 import instruction_impact
+import schema_keys
 import registry_inputs
 import default_inputs
 import replay_edit
@@ -1776,6 +1777,7 @@ def main():
                 sel=instruction_impact.refine(selector,text,sel)
             sel=observed_inputs.refine(selector,text,sel)
             sel=isolated_imports.refine(selector,text,sel)
+            sel=schema_keys.refine(selector,text,sel)
             sel=registry_inputs.include(selector,text,sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]

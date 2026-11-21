@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+track_keys = os.environ.get("BR_SCHEMA_KEYS") == "1"
 active=os.environ.get("BR_FLAG_TEST","")
 imports=[]
 events={}
@@ -39,7 +40,9 @@ def view(obj,attr,mode):
     val=getattr(obj,attr)
     slot=owner(obj)
     if not slot:return val
-    if mode=="validation":
+    if track_keys:
+        mark(slot,"*")
+    elif mode=="validation":
         args=obj.args
         if type(args) is not dict or type(val) is not set or any(type(k) is not str for k in args):
             mark(slot,"*");return val
@@ -128,7 +131,7 @@ class Loader(importlib.machinery.SourceFileLoader):
                         if isinstance(anc,ast.FunctionDef):
                             if anc.name=="error_messages":mode="validation"
                             break
-                if mode in ("keys","derived"):return node
+                if mode=="derived" or (mode=="keys" and not track_keys):return node
                 return ast.copy_location(ast.Call(ast.Name("_br_read",ast.Load()),[node.value,ast.Constant(node.attr),ast.Constant(mode)],[]),node)
             def visit_Call(self,node):
                 self.generic_visit(node)

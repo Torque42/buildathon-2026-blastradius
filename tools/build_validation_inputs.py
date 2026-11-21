@@ -10,6 +10,7 @@ from pathlib import Path
 
 base=Path(__file__).resolve().parent
 repo=base.parent
+track_keys = os.environ.get("BR_SCHEMA_KEYS") == "1"
 source,manifest=map(lambda p:Path(p).resolve(),sys.argv[1:])
 pool=json.loads(gzip.decompress((repo/"maps/pool.json.gz").read_bytes()))["tests"]
 expected={t["id"] for t in json.loads(manifest.read_bytes())["tests"]}
@@ -37,5 +38,6 @@ with ThreadPoolExecutor(max_workers=2) as workers:
     for result in workers.map(run,[None,*pool]):add(result)
 if expected-passed:raise ValueError(sorted(expected-passed))
 payload={"catalog":sorted(expected),"sites":sorted(sites),"readers":{s:{k:sorted(ids) for k,ids in keys.items()} for s,keys in readers.items()}}
-(repo/"maps/validation-inputs.json.gz").write_bytes(gzip.compress(json.dumps(payload,separators=(",",":")).encode(),mtime=0))
+dest = Path(os.environ.get("BR_SCHEMA_OUTPUT", repo / "maps" / ("schema-readers.json.gz" if track_keys else "validation-inputs.json.gz")))
+dest.write_bytes(gzip.compress(json.dumps(payload,separators=(",",":")).encode(),mtime=0))
 print(len(sites),len(readers),len(passed))
