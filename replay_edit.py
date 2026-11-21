@@ -1,5 +1,9 @@
+import gzip,json
+from pathlib import Path
+from functools import lru_cache
 import importlib.abc
 import importlib.util
+@lru_cache(4)
 def possible_edit(selector,text):
     files=selector.parse_patch(text)
     if len(files)!=1:
@@ -22,7 +26,7 @@ def possible_edit(selector,text):
     span=selector.FACTS.get("statements",{}).get(path,{}).get(line)
     if not span or not selector.simple_token_change(before[line-1],after[line-1]):
         return
-    if path in selector.profile()["source_reads"] or line in selector.profile()["code_reads"].get(path,()):
+    if path in selector.profile()["source_reads"]:
         return
     start,end,_=span
     return path,new,((1<<(end-start+1))-1)<<start
@@ -45,3 +49,21 @@ class Overlay(importlib.abc.MetaPathFinder,importlib.abc.Loader):
         exec(compile(self.source,str(self.file),"exec",dont_inherit=True),module.__dict__)
 
 
+
+@lru_cache(1)
+def inspected():
+    return json.loads(gzip.decompress((Path(__file__).parent/"maps/inspection.gz").read_bytes()))
+
+def preserve(selector,text,selected):
+    edit=possible_edit(selector,text)
+    if not edit:return set()
+    path,_,mask=edit
+    if not any((1<<line)&mask for line in selector.profile()["code_reads"].get(path,())):return set()
+    profile=inspected()
+    if set(profile["catalog"])!=set(selector.NUM):return selected
+    retained=set()
+    for (filename,start,end),ids in profile["reads"]:
+        if filename==path and (((1<<(end-start+1))-1)<<start)&mask:
+            if any(n not in selector.NUM for n in ids):return selected
+            retained.update(selector.NUM[n] for n in ids)
+    return selected&retained

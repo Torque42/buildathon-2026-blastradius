@@ -47,7 +47,31 @@ from sqlglot import executor
 from sqlglot.executor.table import Table
 from sqlglot.serde import dump
 suite.TestExecutor.setUpClass()
+import inspect
+import lzma
+chunks={}
+records={}
+def capture(rule,expression,kwargs):
+    # Called at the pinned assignment optimized = rule(optimized, **rule_kwargs).
+    # Exclude profiling work from both caller and callee coverage.
+    phase()
+    raw=pickle.dumps((rule.__module__,rule.__name__,expression,kwargs),protocol=5)
+    key=hashlib.sha256(raw).digest()
+    chunks[key]=raw
+    coverage=phase()
+    result=rule(expression,**kwargs)
+    phase()
+    fingerprint=digest(result,())
+    records.setdefault(rule.__module__,set()).add(key)
+    case["rules"].append((key,fingerprint,coverage))
+    case["outer_opt"].append(phase())
+    return result
+
 real_opt=executor.optimize
+src_text=inspect.getsource(real_opt)
+assert src_text.count("optimized = rule(optimized, **rule_kwargs)")==1
+exec(compile("from __future__ import annotations\n"+src_text.replace("optimized = rule(optimized, **rule_kwargs)","optimized = capture(rule,optimized,rule_kwargs)"),"<pinned-optimizer-trace>","exec"),dict(real_opt.__globals__,capture=capture),scope:={})
+real_opt=scope["optimize"]
 real_plan=executor.Plan
 real_execute=executor.PythonExecutor.execute
 def traced_plan(*args,**kwargs):
@@ -61,7 +85,8 @@ executor.PythonExecutor.execute=traced_execute
 case={}
 stage="initial"
 def traced_opt(*args,**kwargs):
-    case["optimize"]=phase()
+    case["rules"]=[]
+    case["outer_opt"]=[phase()]
     result=real_opt(*args,**kwargs)
     phase()
     case["optimized"]=digest(result,())
@@ -106,6 +131,18 @@ for name,tpch in [("tpch",True),("tpcds",False)]:
             case["reference"]=phase()
             case["duck"]=transpile(sql,write="duckdb")[0]
             phase()
+        if "rules" in case:
+            outer={}
+            for frame in case.pop("outer_opt"):
+                for f,lines in frame.items():outer.setdefault(f,set()).update(lines)
+            case["outer"]=pack_coverage(outer)
+            total={f:set(v) for f,v in outer.items()}
+            rules=[]
+            for key,fp,cov in case["rules"]:
+                for f,lines in cov.items():total.setdefault(f,set()).update(lines)
+                rules.append((key,fp,pack_coverage(cov)))
+            case["rules"]=rules
+            case["optimize"]=total
         for key in ("parse","prepare","optimize","finish","plan","execute_plan","reference"):
             if key in case:case[key]=pack_coverage(case[key])
         snap_dir=root/"maps"/"query-inputs"
@@ -124,3 +161,19 @@ for name,tpch in [("tpch",True),("tpcds",False)]:
 suite.TestExecutor.tearDownClass()
 monitor.set_events(tool,0)
 (root/"maps/query-traces.gz").write_bytes(gzip.compress(marshal.dumps((pack_coverage(init),sets,data)),mtime=0))
+
+index={}
+with (root/"maps/query-rule-blocks.bin").open("wb") as stream:
+    def pack(keys):
+        start=stream.tell()
+        binary=lzma.compress(marshal.dumps([chunks[k] for k in keys]),preset=2)
+        stream.write(binary)
+        for i,k in enumerate(keys):index[k]=(start,len(binary),i)
+    for module,keys in sorted(records.items()):
+        block=[];size=0
+        for key in sorted(keys,key=lambda x:(len(chunks[x]),x)):
+            if size>750000:
+                pack(block);block=[];size=0
+            block.append(key);size+=len(chunks[key])
+        if block:pack(block)
+(root/"maps/query-rule-index.gz").write_bytes(gzip.compress(marshal.dumps(index),mtime=0))

@@ -7,7 +7,7 @@ chosen=sorted(json.loads(manifest.read_bytes())["tests"],key=lambda t:-t["second
 def collect(t):
     node=t["id"];out=dest/str(t["number"]);out.mkdir(parents=True,exist_ok=True)
     if (out/"node").exists():return
-    env=dict(os.environ,PYTHONPATH=os.pathsep.join(map(str,[repo/"tools/predicate_trace",repo,source])),PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ["PATH"],BR_OUT=str(out),BR_SOURCE=str(source),PYTHONHASHSEED="901",SKIP_INTEGRATION="0",OPENBLAS_NUM_THREADS="1",PYTHON_CPU_COUNT="2")
+    env=dict(os.environ,PYTHONPATH=os.pathsep.join(map(str,[repo/"tools"/os.environ.get("BR_TRACE_PLUGIN","predicate_trace"),repo,source])),PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ["PATH"],BR_OUT=str(out),BR_SOURCE=str(source),PYTHONHASHSEED="901",SKIP_INTEGRATION="0",OPENBLAS_NUM_THREADS="1",PYTHON_CPU_COUNT="2")
     with (out/"pytest.log").open("w") as stream:
         proc=subprocess.run([sys.executable,"-m","pytest",node,"-q","--tb=short","-p","no:cacheprovider"],cwd=source,env=env,stdout=stream,stderr=stream)
     log=(out/"pytest.log").read_text()

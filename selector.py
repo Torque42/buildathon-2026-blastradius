@@ -22,6 +22,8 @@ sys.path.insert(0,str(HERE))
 import query_replay
 import flag_readers
 import predicate_select
+import condition_select
+import replay_edit
 WORKER_MS = 2000
 
 
@@ -1732,9 +1734,11 @@ def main():
         try:
             text = p.read_text("utf-8", errors="replace")
             sel, reasons = analyze(text)
+            preserve = replay_edit.preserve(sys.modules[__name__],text,sel)
             sel = flag_readers.refine(sys.modules[__name__], text, sel)
             sel = predicate_select.refine(sys.modules[__name__], text, sel)
-            sel = query_replay.refine(sys.modules[__name__], text, sel)
+            sel = condition_select.refine(sys.modules[__name__],text,sel)
+            sel = query_replay.refine(sys.modules[__name__], text, sel) | preserve
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)

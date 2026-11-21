@@ -4,6 +4,8 @@ import gzip
 import hashlib
 import json
 import marshal
+import lzma
+import importlib
 import pickle
 import subprocess
 import sys
@@ -25,6 +27,7 @@ def refine(selector,text,selected):
     edit=possible_edit(selector,text)
     if not edit:return selected
     path,new,mask=edit
+    if path in {"sqlglot/optimizer/optimizer.py","sqlglot/serde.py","sqlglot/executor/__init__.py"}:return selected
     init,sets,data=profile()
     if path in init and sets[init[path]]&mask:return selected
     # Check the time that would actually disappear from the worker schedule.
@@ -43,7 +46,7 @@ def refine(selector,text,selected):
     if needed:
         budget=min(5.0,possible*0.42)
         try:
-            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([path,new,needed,budget]).encode(),capture_output=True,timeout=budget*2+1)
+            result=subprocess.run([sys.executable,"-I",str(HERE/"query_replay.py")],input=json.dumps([path,new,needed,budget,hex(mask)]).encode(),capture_output=True,timeout=budget*2+1)
             output=result.stdout
         except subprocess.TimeoutExpired as exc:
             output=exc.stdout or b""
@@ -62,7 +65,31 @@ def tables(kind):
     return schema,{name:Table(cols,values) for name,(cols,values) in rows.items()}
 
 
-def verify_query(kind,case,stages):
+@lru_cache(1)
+def rule_index():
+    return marshal.loads(gzip.decompress((MAPS/"query-rule-index.gz").read_bytes()))
+
+@lru_cache(10)
+def rule_block(start,size):
+    with (MAPS/"query-rule-blocks.bin").open("rb") as stream:
+        stream.seek(start)
+        return marshal.loads(lzma.decompress(stream.read(size)))
+
+def replay_rules(case,path,mask):
+    from replay_state import digest
+    _,bits,_=profile()
+    changed=None
+    for key,expected,coverage in case["rules"]:
+        if changed is None and (path not in coverage or not bits[coverage[path]]&mask):
+            continue
+        start,size,i=rule_index()[key]
+        module,name,pristine,kwargs=pickle.loads(rule_block(start,size)[i])
+        fn=getattr(importlib.import_module(module),name)
+        result=fn(pristine if changed is None else changed,**kwargs)
+        changed=None if digest(result,())==expected else result
+    return changed
+
+def verify_query(kind,case,stages,path,mask):
     from sqlglot import parse_one,transpile,find_tables
     from sqlglot import executor
     from sqlglot.optimizer import optimize
@@ -85,10 +112,16 @@ def verify_query(kind,case,stages):
         return True
     optimized=None
     if opt_required and not prepare:
-        if expr is None:expr=restore(case["parse_input"])
-        schema,_=tables(kind)
-        optimized=optimize(expr,ensure_schema(schema),leave_tables_isolated=True,dialect=None)
-        downstream|=digest(optimized,())!=case["optimized"]
+        _,bits,_=profile()
+        outer=case.get("outer",{})
+        if not parse_changed and path.startswith("sqlglot/optimizer/") and "rules" in case and not (path in outer and bits[outer[path]]&mask):
+            optimized=replay_rules(case,path,mask)
+            downstream|=optimized is not None
+        else:
+            if expr is None:expr=restore(case["parse_input"])
+            schema,_=tables(kind)
+            optimized=optimize(expr,ensure_schema(schema),leave_tables_isolated=True,dialect=None)
+            downstream|=digest(optimized,())!=case["optimized"]
     if not downstream and not prepare:
         if "finish" in stages:
             if optimized is None:optimized=restore(case["optimized_input"])
@@ -111,7 +144,8 @@ def verify_query(kind,case,stages):
 
 
 def run():
-    path,new,work,budget=json.load(sys.stdin)
+    path,new,work,budget,mask=json.load(sys.stdin)
+    mask=int(mask,16)
     root=HERE/"cache"/"pinned"
     sys.path[:0]=[str(HERE),str(root)]
     from replay_edit import Overlay
@@ -122,7 +156,7 @@ def run():
         for i,stages in rows:
             if time.process_time()>end:return
             try:
-                if not verify_query(kind,data[kind][i],stages):break
+                if not verify_query(kind,data[kind][i],stages,path,mask):break
             except Exception:
                 break
         else:
