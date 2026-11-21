@@ -36,6 +36,7 @@ import schema_keys
 import registry_inputs
 import default_inputs
 import constructor_inputs
+import lexical_inputs
 import replay_edit
 WORKER_MS = 2000
 
@@ -1786,6 +1787,7 @@ def main():
             sel=parser_table_keys.refine(selector,text,sel)
             sel=schema_keys.refine(selector,text,sel)
             sel=registry_inputs.include(selector,text,sel)
+            sel=lexical_inputs.refine(selector,text,sel)
             if reasons == ["def-header"]:
                 sel=constructor_inputs.refine(selector,text,sel)
         except Exception as e:  # never crash: run everything
