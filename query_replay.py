@@ -240,6 +240,8 @@ def check_jobs(edits,work,budget,forbidden,report):
     sys.path[:0]=[str(HERE),str(root)]
     from replay_edit import Overlay
     for path,new,mask in edits:sys.meta_path.insert(0,Overlay(path,new,root))
+    import row_programs
+    row_programs.install(edits)
     _,_,data=profile()
     signal.signal(signal.SIGPROF,lambda *_:sys.exit(0))
     signal.setitimer(signal.ITIMER_PROF,budget)
