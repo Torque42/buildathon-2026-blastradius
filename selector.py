@@ -18,6 +18,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
+sys.path.insert(0,str(HERE))
+import query_replay
+import flag_readers
 WORKER_MS = 2000
 
 
@@ -1727,6 +1730,8 @@ def main():
         try:
             text = p.read_text("utf-8", errors="replace")
             sel, reasons = analyze(text)
+            sel = flag_readers.refine(sys.modules[__name__], text, sel)
+            sel = query_replay.refine(sys.modules[__name__], text, sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)

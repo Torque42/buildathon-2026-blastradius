@@ -9,6 +9,10 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 cache = root / "cache"
 cache.mkdir(exist_ok=True)
+import tarfile
+with tarfile.open(root / "maps/src.tar.xz") as archive:
+    archive.extractall(cache/"pinned",filter="data")
+
 for name in ("maps", "sources", "pool", "observed-attributes", "source-index", "extra-lines"):
     with (cache / name).open("wb") as stream:
         marshal.dump(json.load(gzip.open(root / "maps" / (name + ".json.gz"))), stream)
