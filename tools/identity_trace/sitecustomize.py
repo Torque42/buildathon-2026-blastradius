@@ -3,15 +3,15 @@ from pathlib import Path
 from enum import Enum
 from functools import lru_cache
 active=os.environ.get("BR_TEST","")
-seen={};sites=set()
+seen={};sites=set();import_depth=0
 primitive={type(None),bool,int,float,str,bytes,dict,list,tuple,set,frozenset,range,type}
 @lru_cache(2048)
 def kind(cls):
     eq=cls.__eq__;ne=cls.__ne__
     if cls in primitive:return "builtin"
     if eq is object.__eq__ and ne is object.__ne__:return "object"
-    if (getattr(eq,"__module__","")=="sqlglot.expressions.core" and getattr(eq,"__qualname__","")=="Expr.__eq__"
-        and getattr(ne,"__module__","")=="sqlglot.expressions.core" and getattr(ne,"__qualname__","")=="Expr.__ne__"):
+    if (getattr(eq,"__module__","")=="sqlglot.expressions.core" and getattr(eq,"__qualname__","")=="Expression.__eq__"
+        and getattr(ne,"__module__","")=="sqlglot.expressions.core" and getattr(ne,"__qualname__","")=="Expression.__ne__"):
         return "guarded-expression"
     if issubclass(cls,Enum) and eq in (str.__eq__,int.__eq__) and ne in (str.__ne__,int.__ne__):return "scalar-enum"
     return "custom"
@@ -19,7 +19,7 @@ def kind(cls):
 def observe(key,left,right,negate):
     a,b=type(left),type(right)
     relation=(kind(a),kind(b),a is b,left is None or right is None,left is right)
-    seen.setdefault(key,{}).setdefault(relation,set()).add(active)
+    seen.setdefault(key,{}).setdefault(relation,set()).add("" if import_depth else active)
     return (left is not right) if negate else (left is right)
 
 class Instrument(ast.NodeTransformer):
@@ -31,6 +31,11 @@ class Instrument(ast.NodeTransformer):
         sites.add(key)
         return ast.copy_location(ast.Call(ast.Name("_br_id_observe",ast.Load()),[ast.Constant(key),node.left,node.comparators[0],ast.Constant(isinstance(node.ops[0],ast.IsNot))],[]),node)
 class Loader(importlib.machinery.SourceFileLoader):
+    def exec_module(self,module):
+        global import_depth
+        import_depth+=1
+        try:return super().exec_module(module)
+        finally:import_depth-=1
     def get_code(self,fullname):
         name=str(Path(self.path).relative_to(Path(os.environ["BR_SOURCE"])))
         tree=Instrument(name).visit(ast.parse(self.get_data(self.path),filename=self.path))

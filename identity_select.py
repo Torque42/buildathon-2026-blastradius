@@ -21,12 +21,13 @@ def locations(selector,path):
         right=n.comparators[0]
         if n.left.end_lineno!=right.lineno:continue
         locations.setdefault(right.lineno,[]).append((n.left.end_col_offset,right.col_offset,
-            "==" if isinstance(n.ops[0],ast.Is) else "!=",f"{path}:{n.lineno}:{n.col_offset}"))
+            "==" if isinstance(n.ops[0],ast.Is) else "!=",f"{path}:{n.lineno}:{n.col_offset}",any(isinstance(v,ast.Constant) and type(v.value) is bool for v in (n.left,right))))
     return locations
 
 
-def equivalent(shape):
+def equivalent(shape,boolean_literal):
     left,right,same_type,with_none,identical=shape
+    if boolean_literal and same_type and left==right=="builtin":return True
     if with_none:
         return left!="custom" and right!="custom"
     if left==right=="object":return True
@@ -47,12 +48,19 @@ def refine(selector,text,selected):
     a,b=aa[line-1],bb[line-1]
     if not a.isascii() or not b.isascii() or line not in selector.FACTS.get("statements",{}).get(path,{}):return selected
     if path in selector.profile()["source_reads"]:return selected
-    for start,end,op,key in locations(selector,path).get(line,()):
+    for start,end,op,key,boolean_literal in locations(selector,path).get(line,()):
         right=len(b)-len(a[end:])
         if not b.startswith(a[:start]) or not b.endswith(a[end:]) or b[start:right].strip()!=op:continue
         catalog,rows=profile();observations=rows.get(key)
         if set(selector.NUM)!=catalog or not observations:return selected
-        if all(equivalent(shape) for shape,ids in observations):
-            from replay_edit import preserve_scope
-            return selector.tests_of(selector.M["opens"].get(path)) | preserve_scope(selector,path,1<<line,selected)
+        uncertain=set()
+        for shape,ids in observations:
+            if equivalent(shape,boolean_literal):continue
+            for test in ids:
+                if test.startswith("scope:"):
+                    uncertain.update(selector.BY_FILE.get(test.removeprefix("scope:"),()))
+                elif test in selector.NUM:uncertain.add(selector.NUM[test])
+                else:return selected
+        from replay_edit import preserve_scope
+        return uncertain | selector.tests_of(selector.M["opens"].get(path)) | preserve_scope(selector,path,1<<line,selected)
     return selected
