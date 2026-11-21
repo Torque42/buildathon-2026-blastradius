@@ -40,9 +40,9 @@ def compare(op,record):
     if op in ("In","NotIn"):
         return (member=="1") != (op=="NotIn") if member!="?" else None
     if relation=="?":return None
-    if op=="Eq":return relation in ("=","U")
-    if op=="NotEq":return relation not in ("=","U")
-    if relation in ("D","U"):return None
+    if op=="Eq":return relation in ("=","U","I")
+    if op=="NotEq":return relation not in ("=","U","I")
+    if relation in ("D","U","I"):return None
     allowed={"Lt":"<","LtE":"<=","Gt":">","GtE":">="}
     return relation in allowed[op] if op in allowed else None
 

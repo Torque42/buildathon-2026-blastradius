@@ -38,13 +38,18 @@ def instruction(code, offset):
 
 def phase(label):
     global current
+    if os.environ.get("BR_VALUE_PHASE"):
+        import sitecustomize
+        sitecustomize.active=label
+        return
     current = records.setdefault(label, {}) if label is not None else None
     monitor.restart_events()
 
 monitor.use_tool_id(slot, "query-stage-offsets")
 monitor.register_callback(slot, events.PY_START, enter)
 monitor.register_callback(slot, events.INSTRUCTION, instruction)
-monitor.set_events(slot, events.PY_START)
+if not os.environ.get("BR_VALUE_PHASE"):
+    monitor.set_events(slot, events.PY_START)
 phase(("init",))
 from tests import test_executor as suite
 from sqlglot import parse_one, transpile, executor

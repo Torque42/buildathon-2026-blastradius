@@ -122,7 +122,7 @@ def leaf(s,f):
             if a is None:eq="U"  # equality works, ordering raises
         else:eq="D"
     elif x.__eq__ is object.__eq__ and y.__eq__ is object.__eq__ and x.__ne__ is object.__ne__ and y.__ne__ is object.__ne__:
-        eq="=" if a is b else "D"
+        eq="I" if a is b else "D"
     member="?"
     # Exact builtins with primitive keys have no observable contains hooks.
     if x in atoms and y in (tuple,list,dict,set,frozenset) and len(b)<=40 and all(type(v) in atoms for v in b):
@@ -150,7 +150,7 @@ class Rewrite(ast.NodeTransformer):
         leaves=[]
         tree(original,leaves)
         self.generic_visit(node)
-        if self.inside and 1<=len(leaves)<=6 and any(isinstance(n,ast.BoolOp) for n in ast.walk(original)) and any("'opaque'" not in str(k) for k in leaves):
+        if self.inside and 1<=len(leaves)<=6 and (any(isinstance(n,ast.BoolOp) for n in ast.walk(original)) or os.environ.get("BR_VALUE_PHASE") and isinstance(original,ast.Compare)) and any("'opaque'" not in str(k) for k in leaves):
             site=(self.path,original.lineno,original.col_offset)
             registered[site]=leaves
             node.test=ast.copy_location(ast.BoolOp(ast.Or(),[ast.Call(ast.Name("_br_branch_fact",ast.Load()),[ast.Constant(site)],[]),node.test]),original)

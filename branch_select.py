@@ -21,7 +21,7 @@ def simple_identity(spec):
     if spec[0]=="call":return spec[1] in ("isinstance","bool")
     return False
 
-def supported(node):
+def supported(node,allow_ordering=False):
     # Constructed containers and interned scalar constants are indistinguishable
     # by value in the trace. Reserve identity checks for actual object references.
     for sub in ast.walk(node):
@@ -29,16 +29,16 @@ def supported(node):
         if isinstance(sub,ast.Compare) and any(isinstance(op,(ast.Is,ast.IsNot)) for op in sub.ops):
             from branch_model import spec
             if not all(simple_identity(spec(value)) for value in [sub.left,*sub.comparators]):return False
-        if isinstance(sub,ast.Compare) and any(isinstance(op,(ast.Lt,ast.Gt,ast.LtE,ast.GtE)) for op in sub.ops):
+        if not allow_ordering and isinstance(sub,ast.Compare) and any(isinstance(op,(ast.Lt,ast.Gt,ast.LtE,ast.GtE)) for op in sub.ops):
             # Primitive and object comparisons have different ordering protocols.
             # The prior numeric-comparison profile handles supported inequalities.
             return False
     return True
 
-def refine(selector,text,selected):
-    if not selected:return selected
+@lru_cache(8)
+def change(selector,text,allow_ordering=False):
     edit=possible_edit(selector,text)
-    if not edit:return selected
+    if not edit:return None
     path,new,mask=edit
     start=(mask&-mask).bit_length()-1;end=mask.bit_length()-1
     def snippet(source):
@@ -48,16 +48,16 @@ def refine(selector,text,selected):
             lines.append(lines[0][:len(lines[0])-len(lines[0].lstrip())]+"    pass")
         return ast.parse("if True:\n"+"\n".join(lines)).body[0].body
     try:a,b=snippet(selector.SRC[path]),snippet(new)
-    except (SyntaxError,ValueError,IndexError):return selected
+    except (SyntaxError,ValueError,IndexError):return None
     wrap=lambda nodes:ast.Module(body=nodes,type_ignores=[])
     aa,bb=wrap(a),wrap(b)
     cond=lambda n:[v for v in ast.walk(n) if isinstance(v,(ast.If,ast.While,ast.IfExp))]
     source=cond(aa);updated=cond(bb)
-    if len(source)!=len(updated):return selected
+    if len(source)!=len(updated):return None
     for left,right in zip(source,updated):
         old,new_node=left.test,right.test
         if ast.dump(old)==ast.dump(new_node):continue
-        if not supported(old) or not supported(new_node):continue
+        if not supported(old,allow_ordering) or not supported(new_node,allow_ordering):continue
         x=[];y=[]
         before,after=tree(old,x),tree(new_node,y)
         if not 1<=len(x)<=6 or x!=y or before==after:continue
@@ -66,14 +66,22 @@ def refine(selector,text,selected):
         equal=ast.dump(aa)==ast.dump(bb)
         left.test=old
         if not equal:continue
-        names,sites=facts()
-        if set(names)!=set(selector.NUM):return selected
-        rows=sites.get((path,start+old.lineno-2,old.col_offset))
-        if rows is None:return selected
-        may=0
-        for state,tests in rows.items():
-            if state is None or len(state)!=len(x) or not unchanged(before,after,state):may|=tests
-        protected=preserve(selector,text,selected)|selector.tests_of(selector.M["opens"].get(path))
-        protected.update(i for i,(opened,_) in selector.EXTRA.items() if path in opened)
-        return {i for i in selected if i in protected or may&names[selector.TEST_FILE_ID[i]]}
-    return selected
+        return (path,start+old.lineno-2,old.col_offset),before,after,len(x)
+    return None
+
+def refine(selector,text,selected):
+    if not selected:return selected
+    proof=change(selector,text)
+    if proof is None:return selected
+    site,before,after,leaves=proof
+    names,sites=facts()
+    if set(names)!=set(selector.NUM):return selected
+    rows=sites.get(site)
+    if rows is None:return selected
+    may=0
+    for state,tests in rows.items():
+        if state is None or len(state)!=leaves or not unchanged(before,after,state):may|=tests
+    path=site[0]
+    protected=preserve(selector,text,selected)|selector.tests_of(selector.M["opens"].get(path))
+    protected.update(i for i,(opened,_) in selector.EXTRA.items() if path in opened)
+    return {i for i in selected if i in protected or may&names[selector.TEST_FILE_ID[i]]}

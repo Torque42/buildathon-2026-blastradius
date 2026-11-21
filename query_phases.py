@@ -6,6 +6,7 @@ import marshal
 from functools import lru_cache
 from pathlib import Path
 
+import stage_decisions
 import default_inputs
 import instruction_impact
 import query_replay
@@ -115,6 +116,7 @@ def refine(selector,text,selected,forbidden=()):
                     seen |= visits
             if wanted & full & ~seen:
                 blocked.add(kind)
+    selected_stages &= ~stage_decisions.unchanged_stages(selector,text,labels,selected_stages)
     if selected_stages & stage_kinds["init"]:
         return None
     jobs = {kind:{} for kind in ids if kind not in blocked and ids[kind] not in protected}
