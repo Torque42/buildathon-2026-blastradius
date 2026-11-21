@@ -31,6 +31,7 @@ import validation_inputs
 import fixture_inputs
 import observed_inputs
 import instruction_impact
+import parser_table_keys
 import schema_keys
 import registry_inputs
 import default_inputs
@@ -1781,6 +1782,7 @@ def main():
             sel=isolated_imports.refine(selector,text,sel)
             if "recursive-comparison" not in reasons:
                 sel=compound.fixture_mix(selector,text,sel)
+            sel=parser_table_keys.refine(selector,text,sel)
             sel=schema_keys.refine(selector,text,sel)
             sel=registry_inputs.include(selector,text,sel)
         except Exception as e:  # never crash: run everything
