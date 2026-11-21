@@ -21,6 +21,7 @@ DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
 sys.path.insert(0,str(HERE))
 import query_replay
 import flag_readers
+import identity_select
 import predicate_select
 import condition_select
 import compound
@@ -1741,6 +1742,7 @@ def main():
                 sel=combined
             else:
                 preserve=replay_edit.preserve(selector,text,sel)
+                sel=identity_select.refine(selector,text,sel)
                 sel=flag_readers.refine(selector,text,sel)
                 sel=predicate_select.refine(selector,text,sel)
                 sel=condition_select.refine(selector,text,sel)

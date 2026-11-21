@@ -58,6 +58,10 @@ def preserve(selector,text,selected):
     edit=possible_edit(selector,text)
     if not edit:return set()
     path,_,mask=edit
+    return preserve_scope(selector,path,mask,selected)
+
+
+def preserve_scope(selector,path,mask,selected):
     if not any((1<<line)&mask for line in selector.profile()["code_reads"].get(path,())):return set()
     profile=inspected()
     if set(profile["catalog"])!=set(selector.NUM):return selected

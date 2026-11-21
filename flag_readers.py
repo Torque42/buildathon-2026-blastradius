@@ -10,7 +10,9 @@ import re
 
 @lru_cache(1)
 def observations():
-    data=json.load(gzip.open(Path(__file__).parent/"maps"/"flags.json.gz","rt"))
+    root=Path(__file__).parent
+    cached=root/"cache/flags"
+    data=marshal.loads(cached.read_bytes()) if cached.is_file() else json.load(gzip.open(root/"maps/flags.json.gz","rt"))
     return set(data["catalog"]),set(data["sites"]),data["readers"]
 
 

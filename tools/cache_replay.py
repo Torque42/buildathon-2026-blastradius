@@ -20,6 +20,11 @@ for name in ("tpcds","tpch"):
     out=cache/name;out.mkdir(exist_ok=True)
     (out/"schema").write_bytes(pickle.dumps(schema,protocol=5))
     for table,data in rows.items():(out/("table-"+table)).write_bytes(pickle.dumps(data,protocol=5))
-for name in ("query-traces","query-rule-index","inspection","conditions","predicate-observations","fixture-cases"):
+for name in ("query-traces","query-rule-index","inspection","conditions","predicate-observations","identities"):
     asset=maps/(name+".gz")
     if asset.is_file():(cache/name).write_bytes(gzip.decompress(asset.read_bytes()))
+
+for name in ("order-shapes","sources","flags"):
+    source=maps/(name+".json.gz")
+    if source.is_file() and not (cache/name).exists():
+        (cache/name).write_bytes(marshal.dumps(json.loads(gzip.decompress(source.read_bytes()))))

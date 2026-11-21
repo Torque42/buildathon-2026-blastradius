@@ -10,7 +10,9 @@ from replay_edit import possible_edit
 
 @lru_cache(1)
 def data():
-    return marshal.loads(gzip.decompress((Path(__file__).parent/"maps/predicate-observations.gz").read_bytes()))
+    root=Path(__file__).parent
+    cached=root/"cache/predicate-observations"
+    return marshal.loads(cached.read_bytes() if cached.is_file() else gzip.decompress((root/"maps/predicate-observations.gz").read_bytes()))
 
 
 def changes(a,b):
@@ -66,15 +68,26 @@ def refine(selector,text,selected):
     edit=possible_edit(selector,text)
     if not edit:return selected
     path,new,mask=edit
-    oldtree=selector.source_tree(path)
-    newtree=ast.parse(new)
-    diffs=list(changes(oldtree,newtree))
+    start=(mask&-mask).bit_length()-1;end=mask.bit_length()-1
+    def snippet(source):
+        lines=source.splitlines()[start-1:end]
+        if not lines or not lines[0][:1].isspace():raise SyntaxError
+        if lines[-1].rstrip().endswith(":"):
+            indent=lines[0][:len(lines[0])-len(lines[0].lstrip())]
+            lines.append(indent+"    pass")
+        return ast.parse("if True:\n"+"\n".join(lines)).body[0].body
+    try:
+        diffs=list(changes(snippet(selector.SRC[path]),snippet(new)))
+        offset=start-2
+    except (SyntaxError,IndexError,ValueError):
+        diffs=list(changes(selector.source_tree(path),ast.parse(new)))
+        offset=0
     if len(diffs)!=1:return selected
     node,mode,detail=diffs[0]
     if not node:return selected
     typ=detail if mode=="reach" else "cmp"
     _,sites=data()
-    record=sites.get(location(path,node,typ))
+    record=sites.get(f"{path}:{node.lineno+offset}:{node.col_offset}:{typ}")
     if not record:return selected
     known,reached,relations,values=record
     may=reached
