@@ -73,6 +73,14 @@ def tests_from_pool_mask(mask):
 
 
 # ---------------------------------------------------------------- patch parsing
+def diff_path(value):
+    """Decode quoted git paths and strip an optional unified-diff timestamp."""
+    value = value.rstrip().split("\t", 1)[0]
+    if value.startswith('"'):
+        value = os.fsdecode(ast.literal_eval("b" + value))
+    return value
+
+
 def parse_patch(text):
     files = []
     cur = None
@@ -82,11 +90,19 @@ def parse_patch(text):
             files.append(cur)
         elif cur is None:
             continue
+        elif line.startswith("rename from "):
+            cur["old"] = diff_path(line[len("rename from "):])
+        elif line.startswith("rename to "):
+            cur["new"] = diff_path(line[len("rename to "):])
+        elif line.startswith("copy from "):
+            cur["copy"] = True
+        elif line.startswith("copy to "):
+            cur["new"] = diff_path(line[len("copy to "):])
         elif line.startswith("--- ") and not cur["hunks"]:
-            p = line[4:].strip()
+            p = diff_path(line[4:])
             cur["old"] = None if p == "/dev/null" else p[2:] if p.startswith("a/") else p
         elif line.startswith("+++ ") and not cur["hunks"]:
-            p = line[4:].strip()
+            p = diff_path(line[4:])
             cur["new"] = None if p == "/dev/null" else p[2:] if p.startswith("b/") else p
         elif line.startswith("@@"):
             m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
@@ -95,10 +111,17 @@ def parse_patch(text):
             if line.startswith("\\"):
                 continue
             cur["hunks"][-1]["lines"].append(line if line else " ")
+    changes = []
     for f in files:
-        if f["old"] is None and f["new"] is None:
-            m = re.match(r"diff --git a/(\S+) b/(\S+)", "")
-    return files
+        old, new = f["old"], f["new"]
+        if f.get("copy"):
+            changes.append({"old": None, "new": new, "hunks": []})
+        elif old and new and old != new:
+            changes.append({"old": old, "new": None, "hunks": []})
+            changes.append({"old": None, "new": new, "hunks": []})
+        else:
+            changes.append(f)
+    return changes
 
 
 def apply(old, hunks):
