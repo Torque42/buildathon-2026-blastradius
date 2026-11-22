@@ -51,6 +51,7 @@ import get_inputs
 import shortlist
 import workload_replay
 import callback_consumers
+import dispatch_delta
 import slot_inputs
 import import_impact
 import replay_edit
@@ -1913,6 +1914,7 @@ def main():
                 sel = collection_guard.include_failed(selector, text, sel)
                 reasons.append("collection-failed")
             elif not comment_readers:
+                sel = dispatch_delta.refine(selector, text, sel)
                 sel = workload_replay.refine(selector, text, sel)
             sel = callback_consumers.include(selector, text, sel)
         except Exception as e:  # never crash: run everything
