@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
 sys.path.insert(0,str(HERE))
 import query_replay
+import trial_schedule
 import query_phases
 import parse_replay
 import flag_readers
@@ -1921,6 +1922,8 @@ def main():
             if collection_guard.failed(selector, text, sel):
                 sel = collection_guard.include_failed(selector, text, sel)
                 reasons.append("collection-failed")
+            else:
+                sel = trial_schedule.refine(selector, text, sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)
