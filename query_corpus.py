@@ -159,7 +159,8 @@ def checked(edits,full,order,budget):
                 os.dup2(sink.fileno(),2)
             from contextlib import nullcontext
             import corpus_worker
-            with (corpus_worker.session(edits,budget) if full else nullcontext()) as worker:
+            independent = full and any(needs_full(path) for path in edits)
+            with (corpus_worker.session(edits,budget) if independent else nullcontext()) as worker:
                 for kind in execute(edits,full,order,worker):
                     os.write(wr,(kind+"\n").encode())
         finally:

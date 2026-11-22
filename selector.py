@@ -52,6 +52,7 @@ import shortlist
 import workload_replay
 import callback_consumers
 import query_corpus
+import parser_frontier
 import dispatch_delta
 import type_assertions
 import slot_inputs
@@ -1944,6 +1945,7 @@ def main():
         try:
             if verify:
                 selected=workload_replay.refine(selector,text,selected)
+                selected=parser_frontier.refine(selector,text,selected)
                 selected=query_corpus.refine(selector,text,selected)
                 selected=type_assertions.refine(selector,text,selected)
             selected=callback_consumers.include(selector,text,selected)

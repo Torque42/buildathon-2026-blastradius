@@ -8,4 +8,6 @@ COPY tools/cache_maps.py tools/cache_replay.py tools/cache_import_impacts.py too
 RUN python -I /app/tools/cache_maps.py && python -I /app/tools/cache_replay.py && python -I /app/tools/cache_import_impacts.py && python -I /app/tools/cache_shortlists.py && python -I /app/tools/cache_function_shapes.py && python -I /app/tools/cache_expression_snapshots.py && python -m compileall -q --invalidation-mode unchecked-hash /app/cache/pinned /app/*.py && python -I -S /app/collection_guard.py build
 COPY tools/cache_row_scans.py /app/tools/
 RUN python -I /app/tools/cache_row_scans.py
+COPY tools/cache_parser_frontiers.py /app/tools/
+RUN python -I /app/tools/cache_parser_frontiers.py
 CMD ["python", "-I", "/app/selector.py"]
