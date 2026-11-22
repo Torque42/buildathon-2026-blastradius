@@ -52,6 +52,7 @@ import shortlist
 import workload_replay
 import first_divergence
 import batch_assertions
+import parser_contract
 import callback_consumers
 import slot_inputs
 import import_impact
@@ -1922,6 +1923,7 @@ def main():
                 if "class-initialization" not in reasons:
                     sel = first_divergence.refine(selector, text, sel)
                 sel = workload_replay.refine(selector, text, sel)
+                sel = parser_contract.refine(selector, text, sel)
                 eligible = "class-initialization" not in reasons
             sel = callback_consumers.include(selector, text, sel)
         except Exception as e:  # never crash: run everything

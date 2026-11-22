@@ -226,7 +226,7 @@ def affected_stages(node, details, opaque, trace, relevant):
     return result
 
 
-def run_node(edits, reusable):
+def run_node(edits, reusable, check=None):
     """Run the pinned unittest, reusing only identical large calls whose code could not diverge."""
     import unittest
     with tempfile.TemporaryDirectory(prefix="br-node-") as tmp:
@@ -239,7 +239,7 @@ def run_node(edits, reusable):
                 with open(os.devnull, "wb") as sink:
                     os.dup2(sink.fileno(), 1)
                     os.dup2(sink.fileno(), 2)
-                signal.setitimer(signal.ITIMER_PROF, 0.85)
+                signal.setitimer(signal.ITIMER_PROF, 1.6 if check else 0.85)
                 signal.alarm(3)
                 sys.path.insert(0, str(folder))
                 os.chdir(folder)
@@ -259,6 +259,8 @@ def run_node(edits, reusable):
                     error = reusable.get(key)
                     if not error or error[:2] != ("sqlglot.errors", "ParseError"):
                         raise RuntimeError("Unverified parser call")
+                    if check is not None and not check(key):
+                        raise RuntimeError("The patched test reads different program state")
                     observed.add(key)
                     raise ParseError(error[2])
 
