@@ -59,8 +59,8 @@ def identify(selector, text):
     # Other branch refinements already cover same-width one-token substitutions.
     if len(removed) == len(added) == 1 and selector.simple_token_change(source.splitlines()[removed[0]-1], updated.splitlines()[min(added)-1]):
         return
-    old = source.encode().splitlines(keepends=True)
-    new = updated.encode().splitlines(keepends=True)
+    old = source.replace("\r\n", "\n").encode().splitlines(keepends=True)
+    new = updated.replace("\r\n", "\n").encode().splitlines(keepends=True)
     left = list(guards(selector.source_tree(path), min(removed), max(removed)))
     if not left:
         return
