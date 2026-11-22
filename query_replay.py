@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+import snapshot_cache
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
@@ -118,7 +119,9 @@ def fork_checks(edits, work, budget, forbidden):
 
 def restore(label):
     cached=HERE/"cache"/"query-inputs"/label
-    return pickle.loads(cached.read_bytes() if cached.is_file() else gzip.decompress((MAPS/"query-inputs"/(label+".gz")).read_bytes()))
+    def standard():
+        return pickle.loads(cached.read_bytes() if cached.is_file() else gzip.decompress((MAPS/"query-inputs"/(label+".gz")).read_bytes()))
+    return snapshot_cache.load("query-inputs-"+label, standard)
 
 
 @lru_cache(2)
@@ -160,10 +163,12 @@ def replay_rules(case,edits,rule_hits=None):
             continue
         start,size,i=rule_index()[key]
         cached=HERE/"cache"/"rules"/f"{start}-{i}"
-        module,name,pristine,kwargs=pickle.loads(cached.read_bytes() if cached.is_file() else rule_block(start,size)[i])
+        def standard():
+            return pickle.loads(cached.read_bytes() if cached.is_file() else rule_block(start,size)[i])
+        module,name,pristine,kwargs=snapshot_cache.load(f"rules-{start}-{i}",standard)
         fn=getattr(importlib.import_module(module),name)
         result=fn(pristine if changed is None else changed,**kwargs)
-        changed=None if digest(result,())==expected else result
+        changed=None if snapshot_cache.matches(result,expected) else result
     return changed
 
 def verify_query(kind,case,stages,edits,precise=False,rule_hits=None):
@@ -179,7 +184,7 @@ def verify_query(kind,case,stages,edits,precise=False,rule_hits=None):
     if "parse" in stages:
         expr=pickle.loads(pickle.dumps(parse_one(case["sql"])))
         if case["execute"]:
-            parse_changed=digest(expr,())!=case["parsed"]
+            parse_changed=not snapshot_cache.matches(expr,case["parsed"])
     if not case["execute"]:
         return True
     prepare="prepare" in stages
@@ -202,7 +207,7 @@ def verify_query(kind,case,stages,edits,precise=False,rule_hits=None):
             if expr is None:expr=restore(case["parse_input"])
             schema=schema_for(kind)
             optimized=optimize(expr,ensure_schema(schema),leave_tables_isolated=True,dialect=None)
-            downstream|=digest(optimized,())!=case["optimized"]
+            downstream|=not snapshot_cache.matches(optimized,case["optimized"])
     if not downstream and not prepare:
         if "finish" in stages:
             if optimized is None:optimized=restore(case["optimized_input"])
@@ -226,6 +231,7 @@ def verify_query(kind,case,stages,edits,precise=False,rule_hits=None):
 
 def check_jobs(edits,work,budget,forbidden,report):
     import unittest  # The pinned expression library reads this flag during import.
+    snapshot_cache.configure(edits)
     opened = set()
     if forbidden:
         import os
