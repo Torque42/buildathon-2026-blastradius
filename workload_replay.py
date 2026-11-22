@@ -4,6 +4,7 @@ from collections import defaultdict
 from functools import lru_cache
 import gzip
 import hashlib
+import dis
 import marshal
 import os
 from pathlib import Path
@@ -23,6 +24,11 @@ import shortlist
 ROOT = Path(__file__).resolve().parent
 NODE = "tests/test_parser.py::TestParser::test_max_nodes"
 SPENT = 0.0
+PERSISTENT_OPERATIONS = {
+    "setattr", "delattr", "environ", "modules", "setrecursionlimit",
+    "settrace", "setprofile", "globals", "locals", "exec", "eval", "open", "sys", "os",
+    "random", "secrets", "signal", "register", "unregister", "cache_clear",
+}
 
 
 def cpu():
@@ -53,7 +59,8 @@ def body_edits(path, before, after):
     """Return potential first divergences in existing bodies, or an entire-module dependency."""
     shell, old_funcs, old_codes = function_changes.baseline(path, before)
     other_shell, new_funcs = function_changes.skeleton(after)
-    if shell != other_shell or old_funcs.keys() != new_funcs.keys():
+    if (shell != other_shell or old_funcs.keys() != new_funcs.keys()
+            or None in old_funcs.values() or None in new_funcs.values()):
         return None
     changed = [name for name, row in old_funcs.items() if row != new_funcs[name]
                and (row is None or new_funcs[name] is None or row[1] != new_funcs[name][1])]
@@ -69,6 +76,13 @@ def body_edits(path, before, after):
             return None
         a, b = old_codes[name][0], new_codes[name][0]
         old_family, new_family = list(children(a)), list(children(b))
+        for member in (*old_family, *new_family):
+            if PERSISTENT_OPERATIONS.intersection(member.co_names):
+                return None
+            if any(op.opname in {"STORE_GLOBAL", "DELETE_GLOBAL", "IMPORT_NAME"} or
+                   (op.opname in {"STORE_DEREF", "DELETE_DEREF"} and op.argval in member.co_freevars)
+                   for op in dis.get_instructions(member)):
+                return None
         same_family = [c.co_qualname for c in old_family] == [c.co_qualname for c in new_family]
         for index, code in enumerate(old_family):
             mask = None
