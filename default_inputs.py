@@ -16,6 +16,10 @@ def observations():
 
 @lru_cache(maxsize=16)
 def declarations(selector,path):
+    import source_proofs
+    cached = source_proofs.read(path)
+    if cached is not None:
+        return cached["defaults"]
     result={}
     tree=selector.source_tree(path)
     for scope in [tree,*[n for n in tree.body if isinstance(n,ast.ClassDef)]]:

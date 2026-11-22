@@ -23,6 +23,10 @@ def profile():
 
 @lru_cache(96)
 def class_hooks(selector, path):
+    import source_proofs
+    cached = source_proofs.read(path)
+    if cached is not None:
+        return cached["class_hooks"]
     source = selector.SRC[path]
     if "__init_subclass__" not in source and "__new__" not in source and "metaclass=" not in source:
         return ()

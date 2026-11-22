@@ -17,6 +17,10 @@ def profile():
 
 @lru_cache(16)
 def declarations(selector, path):
+    import source_proofs
+    cached = source_proofs.read(path)
+    if cached is not None:
+        return cached["arguments"]
     functions = {}
     for node in ast.walk(selector.source_tree(path)):
         if not isinstance(node, ast.FunctionDef) or node.decorator_list:

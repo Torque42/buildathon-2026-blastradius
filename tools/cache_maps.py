@@ -168,3 +168,23 @@ access_index = {path: access_entries(path,selector.source_tree(path)) for path i
 (cache/"access-sites").write_bytes(marshal.dumps(access_index))
 from consumer_select import lexer_guards
 (cache/"lexer-guards").write_bytes(marshal.dumps(lexer_guards(selector)))
+
+# The actual run uses the same locations as the pin analysis performed here.
+import argument_reads
+import default_inputs
+import get_inputs
+import import_impact
+import pickle
+import source_proofs
+for path in selector.SRC:
+    if not path.startswith("sqlglot/") or not path.endswith(".py"):
+        continue
+    row = {
+        "get": get_inputs.positions(selector, path),
+        "arguments": argument_reads.declarations(selector, path),
+        "defaults": default_inputs.declarations(selector, path),
+        "class_hooks": import_impact.class_hooks(selector, path),
+    }
+    dest = source_proofs.ROOT / (path + ".pickle")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(pickle.dumps(row, protocol=5))

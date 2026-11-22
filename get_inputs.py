@@ -16,6 +16,10 @@ def profile():
 
 @lru_cache(maxsize=32)
 def positions(selector,path):
+    import source_proofs
+    cached = source_proofs.read(path)
+    if cached is not None:
+        return cached["get"]
     index={}
     for n in ast.walk(selector.source_tree(path)):
         if (not isinstance(n,ast.Call) or not isinstance(n.func,ast.Attribute) or n.func.attr!="get"
