@@ -49,6 +49,8 @@ import constructor_inputs
 import lexical_inputs
 import get_inputs
 import shortlist
+import workload_replay
+import callback_consumers
 import slot_inputs
 import import_impact
 import replay_edit
@@ -1910,6 +1912,9 @@ def main():
             if collection_guard.failed(selector, text, sel):
                 sel = collection_guard.include_failed(selector, text, sel)
                 reasons.append("collection-failed")
+            elif not comment_readers:
+                sel = workload_replay.refine(selector, text, sel)
+            sel = callback_consumers.include(selector, text, sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
         workers = covered_schedule(text, sel)
