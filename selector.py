@@ -50,6 +50,7 @@ import lexical_inputs
 import get_inputs
 import shortlist
 import workload_replay
+import lexer_contracts
 import callback_consumers
 import slot_inputs
 import import_impact
@@ -1906,6 +1907,8 @@ def main():
             selector = sys.modules[__name__]
             text, comment_readers = comment_layers.simplify(selector, text)
             sel, reasons = select_tests(text)
+            if not comment_readers:
+                sel = lexer_contracts.refine(selector, text, sel)
             if not comment_readers:
                 sel = shortlist.refine(selector, text, sel)
             sel = sel | comment_readers
