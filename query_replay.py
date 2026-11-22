@@ -248,6 +248,8 @@ def check_jobs(edits,work,budget,forbidden,report):
     for path,new,mask in edits:sys.meta_path.insert(0,Overlay(path,new,root))
     import row_programs
     row_programs.install(edits)
+    import row_loops
+    row_loops.install(edits)
     _,_,data=profile()
     signal.signal(signal.SIGPROF,lambda *_:sys.exit(0))
     signal.setitimer(signal.ITIMER_PROF,budget)
