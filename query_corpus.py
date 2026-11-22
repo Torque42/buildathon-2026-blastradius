@@ -110,7 +110,10 @@ def execute(edits,full,order):
                 # Function bodies retain their namespace initialization. Use
                 # the entire changed file as the dependency for every stage.
                 stages=[stage for stage in FIELDS if any(p in case.get(stage,{}) for p in edits)]
-                if stages and not query_replay.verify_query(kind,case,stages,sources,True,None):
+                rules=None
+                if "optimize" in stages and "rules" in case and not any(p in case.get("outer",{}) for p in edits):
+                    rules=[i for i,(_,_,coverage) in enumerate(case["rules"]) if any(p in coverage for p in edits)]
+                if stages and not query_replay.verify_query(kind,case,stages,sources,True,rules):
                     break
         else:
             yield kind
