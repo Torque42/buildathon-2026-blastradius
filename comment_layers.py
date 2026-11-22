@@ -1,11 +1,35 @@
 """Separate inert comment edits so a behavioral hunk can use its normal analysis."""
 import ast
 import difflib
+import marshal
 import re
 from replay_edit import preserve_scope
 
 COMMENT=re.compile(r"^[ \t]*#")
 DIRECTIVE=re.compile(r"coding[:=]|^\s*#\s*(?:!|type\s*:|pragma\b|fmt\b|noqa\b|pytest\b|cython\b|mypy\b)",re.I)
+
+def replacement_lines(path, base, full, reduced):
+    """Find same-line comment replacements whose compiled code and positions agree."""
+    original, actual, simplified = (source.splitlines() for source in (base, full, reduced))
+    if len(original) != len(actual) or len(actual) != len(simplified):
+        return None
+    mask = 0
+    for line, (old, new, kept) in enumerate(zip(original, actual, simplified), 1):
+        if new == kept:
+            continue
+        if old != kept or any(not COMMENT.match(value) or DIRECTIVE.search(value) for value in (new, kept)):
+            return None
+        mask |= 1 << line
+    if not mask:
+        return None
+    # Marshal includes nested code objects, constants and location/exception tables.
+    try:
+        left = compile(full, path, "exec", dont_inherit=True)
+        right = compile(reduced, path, "exec", dont_inherit=True)
+    except (SyntaxError, ValueError, OverflowError):
+        return None
+    return mask if marshal.dumps(left) == marshal.dumps(right) else None
+
 def simplify(selector,text):
     if not re.search(r"(?m)^[-+][ \t]*#",text):return text,set()
     # A single comment-only diff is already handled by the fast path.
@@ -40,7 +64,11 @@ def simplify(selector,text):
         keep.update(selector.tests_of(selector.M["opens"].get(path)))
         keep.update(i for i,(files,_) in selector.EXTRA.items() if path in files)
         lines=selector.profile()["code_reads"].get(path,())
-        if lines:keep.update(preserve_scope(selector,path,sum(1<<n for n in set(lines)),selector.ALL))
+        if lines:
+            mask = replacement_lines(path, base, full, reduced)
+            if mask is None:
+                mask = sum(1 << n for n in set(lines))
+            keep.update(preserve_scope(selector, path, mask, selector.ALL))
         changed=True
         if reduced!=base:
             diff=difflib.unified_diff(base.splitlines(True),reduced.splitlines(True),"a/"+path,"b/"+path)
