@@ -19,8 +19,13 @@ EXCLUDED=workload_replay.PERSISTENT_OPERATIONS|{"__subclasses__","__getattr__","
     "stdout","stderr","__import__","getframe","excepthook"}
 
 
+def needs_full(path):
+    return (path in ("sqlglot/__init__.py","sqlglot/helper.py","sqlglot/expressions.py","sqlglot/expressions/__init__.py")
+            or path.startswith(("sqlglot/expressions/","sqlglot/typing/")))
+
+
 def eligible(path):
-    return (path in ("sqlglot/parser.py","sqlglot/generator.py","sqlglot/planner.py",
+    return (needs_full(path) or path in ("sqlglot/parser.py","sqlglot/generator.py","sqlglot/planner.py",
                      "sqlglot/tokenizer_core.py","sqlglot/tokens.py","sqlglot/schema.py")
             or path.startswith(("sqlglot/optimizer/","sqlglot/parsers/","sqlglot/generators/","sqlglot/dialects/")))
 
@@ -63,9 +68,20 @@ def fixture(kind):
         return rows
 
 
-def full_case(kind,case):
+def full_case(kind,case,worker=None):
     from sqlglot import executor,find_tables,parse_one,transpile
-    expr=pickle.loads(pickle.dumps(parse_one(case["sql"])))
+    parsed=pickle.dumps(parse_one(case["sql"]))
+    if worker is not None:
+        worker.send((kind,case["execute"],parsed))
+        wire=pickle.loads(worker.recv_bytes())
+        if not case["execute"]:
+            return wire is None
+        from sqlglot.executor.table import Table
+        if type(wire) is not Table:
+            return False
+        digest=hashlib.sha256(repr((tuple(wire.columns),wire.rows)).encode()).hexdigest()
+        return digest==case["table"] and transpile(case["sql"],write="duckdb")[0]==case["duck"]
+    expr=pickle.loads(parsed)
     if not case["execute"]:
         return True
     chosen={t.name:query_replay.table_for(kind,t.name) for t in find_tables(expr)}
@@ -75,7 +91,7 @@ def full_case(kind,case):
     return actual==case["table"] and transpile(case["sql"],write="duckdb")[0]==case["duck"]
 
 
-def execute(edits,full,order):
+def execute(edits,full,order,worker=None):
     import unittest
     import replay_edit
     import snapshot_cache
@@ -98,13 +114,15 @@ def execute(edits,full,order):
     if not full:
         row_programs.install(sources)
         row_loops.install(sources)
+    import scan_cache
+    scan_cache.install(sources)
     for kind in order:
         if fixture(kind) is None or query_replay.schema_for(kind)!=(TPCH_SCHEMA if kind=="tpch" else TPCDS_SCHEMA):
             continue
         cases=catalog()[kind]
         for case in cases:
             if kind in full:
-                if not full_case(kind,case):
+                if not full_case(kind,case,worker):
                     break
             else:
                 # Function bodies retain their namespace initialization. Use
@@ -139,8 +157,11 @@ def checked(edits,full,order,budget):
             with open(os.devnull,"wb") as sink:
                 os.dup2(sink.fileno(),1)
                 os.dup2(sink.fileno(),2)
-            for kind in execute(edits,full,order):
-                os.write(wr,(kind+"\n").encode())
+            from contextlib import nullcontext
+            import corpus_worker
+            with (corpus_worker.session(edits,budget) if full else nullcontext()) as worker:
+                for kind in execute(edits,full,order,worker):
+                    os.write(wr,(kind+"\n").encode())
         finally:
             os._exit(0)
     os.close(wr)
@@ -173,8 +194,9 @@ def refine(selector,text,selected):
                 del targets[k]
         if not targets:
             return selected
-        full=set(targets) if opaque else set()
-        if not opaque:
+        complete=bool(opaque) or any(needs_full(p) for p in edits)
+        full=set(targets) if complete else set()
+        if not complete:
             from query_phases import profile
             labels,trace,kinds=profile()
             for k in targets:

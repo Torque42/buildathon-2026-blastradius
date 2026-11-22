@@ -250,6 +250,8 @@ def check_jobs(edits,work,budget,forbidden,report):
     row_programs.install(edits)
     import row_loops
     row_loops.install(edits)
+    import scan_cache
+    scan_cache.install(edits)
     _,_,data=profile()
     signal.signal(signal.SIGPROF,lambda *_:sys.exit(0))
     signal.setitimer(signal.ITIMER_PROF,budget)
