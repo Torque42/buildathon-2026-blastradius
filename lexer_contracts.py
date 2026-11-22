@@ -2,7 +2,7 @@
 
 import ast
 from functools import lru_cache
-import hashlib
+import importlib
 import lzma
 import marshal
 import os
@@ -72,6 +72,14 @@ def describe(selector,text):
             not (path=="sqlglot/tokens.py" or path.startswith("sqlglot/dialects/"))):
         return
     old=selector.SRC[path]
+    lines=old.splitlines()
+    end=0
+    for h in p["hunks"]:
+        start=max(0,h["os"]-1)
+        context=[line[1:].rstrip("\r") for line in h["lines"] if line.startswith((" ","-"))]
+        if start<end or lines[start:start+len(context)]!=context:
+            return
+        end=start+len(context)
     new, removed, added=selector.apply(old,p["hunks"])
     if not removed and not added:
         return
@@ -118,10 +126,12 @@ def take_snapshot():
     from sqlglot.dialects import Dialect,Dialects
     from sqlglot.parser import Parser
     from sqlglot.tokens import Tokenizer
+    wanted={cls for cls,_ in profile()[-1]}
+    for name in sorted({owner.split(":")[0] for owner in wanted}):
+        importlib.import_module(name)
     dialects=[Dialect.get_or_raise(name) for name in Dialects]
     # Resolve subclasses outside the public registry (including Athena's two lexical engines).
     owners={type(d.tokenizer()):d for d in dialects}
-    wanted={cls for cls,_ in profile()[-1]}
     seen=set()
     stack=[Tokenizer]
     result={}
@@ -194,9 +204,13 @@ def affected(actual):
     for cls,before in old.items():
         for field,first in before.items():
             last=new[cls][field]
-            if first==last and (type(first) is not dict or tuple(first)==tuple(last)):
-                continue
-            for (path,op),index in sites.get((cls,field),{}).items():
+            reads=sites.get((cls,field),{})
+            if first==last:
+                if type(first) is not dict or not any(op=="all" for _,op in reads):
+                    continue
+                if order_value(first)==order_value(last):
+                    continue
+            for (path,op),index in reads.items():
                 if observe(first,path,op)!=observe(last,path,op):
                     kept|=masks[index]
     return kept
@@ -251,8 +265,11 @@ def refine(selector,text,selected):
         if not change:
             return selected
         path,new,declared_fields,inspect=change
-        names,bits,_,_=profile()
+        names,bits,_,sites=profile()
         if set(names)!=set(selector.NUM):
+            return selected
+        module=path[:-3].replace("/",".")
+        if any(not any(cls==module+":"+owner for cls,_ in sites) for owner,_ in declared_fields):
             return selected
         kept=run(path,new)
         if kept is None:
@@ -260,6 +277,11 @@ def refine(selector,text,selected):
         saved=set(replay_edit.preserve_scope(selector,path,inspect,selected))
         saved.update(selector.tests_of(selector.M["opens"].get(path)))
         saved.update(n for n,(raw,_) in selector.EXTRA.items() if path in raw)
+        import instruction_impact
+        version,numbers,known,_=instruction_impact.observations()
+        if tuple(version)!=sys.version_info[:2]:
+            return selected
+        saved.update(n for n in selected if not known&numbers.get(selector.TEST_FILE_ID[n],0))
         fields=tuple(sorted({field for _,field in declared_fields}))
         for name in test_files(fields):
             saved.update(selector.BY_FILE.get(name,()))
