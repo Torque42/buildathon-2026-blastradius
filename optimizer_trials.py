@@ -16,6 +16,7 @@ from types import ModuleType, SimpleNamespace
 import unittest
 
 import replay_edit
+import optimizer_jobs
 import shortlist
 import workload_replay as workload
 
@@ -37,6 +38,8 @@ class SQLResult:
 
 class Boundary:
     def __init__(self):
+        self.jobs=None
+        self.method=None
         self.clear()
 
     def clear(self):
@@ -117,9 +120,13 @@ def load(root, boundary):
             boundary.calls += 1
             future=Future()
             try:
-                func,values,kw=pickle.loads(pickle.dumps((entry,args,kwargs)))
-                result=func(*values,**kw)
-                future.set_result(pickle.loads(pickle.dumps(result)))
+                def compute(packet):
+                    func,values,kw=pickle.loads(packet)
+                    return pickle.dumps(func(*values,**kw))
+                packet=pickle.dumps((entry,args,kwargs))
+                output=(compute(packet) if boundary.jobs is None else
+                        boundary.jobs.capture(boundary.method,packet,compute))
+                future.set_result(pickle.loads(output))
             except Exception as exc:
                 future.set_exception(exc)
             return future
@@ -145,6 +152,7 @@ def load(root, boundary):
 
 def execute(module,boundary,name):
     boundary.clear()
+    boundary.method=name
     result=unittest.TestResult()
     unittest.TestSuite([module.TestOptimizer(name)]).run(result)
     if (result.testsRun!=1 or not result.wasSuccessful() or result.skipped or result.expectedFailures
@@ -190,7 +198,7 @@ def tree_edits(selector,text):
     return result if 1<=len(result)<=8 else None
 
 
-def trial(edits, work, budget):
+def trial(edits, work, budget, affected=None):
     with tempfile.TemporaryDirectory(prefix="br-optimizer-") as tmp:
         folder=Path(tmp)
         shortlist.patched_tree(folder,edits)
@@ -215,6 +223,8 @@ def trial(edits, work, budget):
                     os.dup2(sink.fileno(),2)
                     boundary=Boundary()
                     module=load(folder,boundary)
+                    if affected is not None:
+                        boundary.jobs=optimizer_jobs.Replay(observations()["worker-profile"],affected)
                     for n,name in work:
                         try:
                             if execute(module,boundary,name)==observations()[name][1]:
@@ -232,7 +242,7 @@ def trial(edits, work, budget):
 
 def refine(selector,text,selected):
     global spent
-    if not selected or spent>=11 or "sqlglot" in sys.modules:
+    if not selected or spent>=6.5 or "sqlglot" in sys.modules:
         return selected
     data=observations()
     choices={n:selector.TEST_FILE_ID[n].removeprefix(NODE) for n in selected if selector.TEST_FILE_ID[n].startswith(NODE)}
@@ -241,31 +251,45 @@ def refine(selector,text,selected):
         return selected
     base=selector.worker_cost(selector.split(selected))
     maxgain=(base-selector.worker_cost(selector.split(selected-choices.keys())))/1000
-    if maxgain < 0.55:
+    if maxgain < 0.65:
         return selected
+    edits=tree_edits(selector,text)
+    if not edits:
+        return selected
+    profile=data.get("worker-profile")
+    affected=optimizer_jobs.compile_impact(selector,edits,profile)
+    if affected is None:
+        return selected
+    def estimate(n):
+        name=choices[n]
+        full=data[name][0]
+        jobs=profile[6].get(name)
+        if not jobs:
+            return full
+        touched=sum(bool(affected&(1<<job)) for job in jobs)/len(jobs)
+        # Deserialization, ordinary Python assertions and SQL generation still execute.
+        return full*(0.17+0.83*touched)
     best=None
-    for order in (sorted(choices,key=lambda n:-selector.DUR[n]),sorted(choices,key=lambda n:-selector.DUR[n]/(0.001+data[choices[n]][0]))):
+    for order in (sorted(choices,key=lambda n:-selector.DUR[n]),sorted(choices,key=lambda n:-selector.DUR[n]/(0.001+estimate(n)))):
         for size in (1,3,8,18,40,len(order)):
             ns=order[:size]
-            measured=sum(data[choices[n]][0] for n in ns)
+            measured=sum(estimate(n) for n in ns)
             if measured>3.2:
                 continue
             gain=(base-selector.worker_cost(selector.split(selected-set(ns))))/1000
             benefit=gain-1.1*measured-0.12
-            if benefit>0.3 and (best is None or benefit>best[0]):
+            if benefit>0.50 and (best is None or benefit>best[0]):
                 best=(benefit,gain,measured,ns)
     if best is None:
         return selected
     _,gain,measured,ns=best
     start=workload.cpu()
     try:
-        edits=tree_edits(selector,text)
-        if edits:
-            budget=min(11-spent, 3.7, gain*0.64, max(0.30,1.6*measured+0.20))
-            passed=trial(edits,[(n,choices[n]) for n in ns],budget)
-            if passed:
-                print("verified original optimizer tests",len(passed),file=sys.stderr)
-            return selected-passed
+        budget=min(6.5-spent, 2.7, gain*0.57, max(0.28,1.7*measured+0.16))
+        passed=trial(edits,[(n,choices[n]) for n in ns],budget,affected)
+        if passed:
+            print("verified original optimizer tests",len(passed),file=sys.stderr)
+        return selected-passed
     except (OSError,ValueError,TypeError,SyntaxError,KeyError,IndexError):
         pass
     finally:
