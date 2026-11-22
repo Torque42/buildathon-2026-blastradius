@@ -122,7 +122,6 @@ def refine_parts(selector, parts, selected, forbidden=(), attempted=None):
            if selector.NUM.get(node) in selected}
     if not ids or not parts:
         return None
-    labels, _, stage_kinds = profile()
     selected_stages = 0
     blocked = set()
     edits = []
@@ -137,6 +136,7 @@ def refine_parts(selector, parts, selected, forbidden=(), attempted=None):
         if hits is None:
             return None
         stages, unknown = hits
+        labels, _, stage_kinds = profile()
         if len(parts) == 1:
             stages &= ~stage_decisions.unchanged_stages(selector, part, labels, stages)
         selected_stages |= stages
