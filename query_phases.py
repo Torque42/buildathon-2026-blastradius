@@ -75,14 +75,12 @@ def analyze(selector,text):
     return path, after, details, inspect_mask
 
 def refine(selector,text,selected,forbidden=(),attempted=None):
-    ids = {k:selector.NUM[name] for k,name in query_replay.IDS.items() if selector.NUM.get(name) in selected}
-    if not ids:
-        return None
-    candidate = analyze(selector,text)
-    if not candidate:
-        return None
-    path,source,changes,inspect_mask = candidate
-    protected = replay_edit.preserve_scope(selector,path,inspect_mask,selected)
+    return refine_parts(selector, [text], selected, forbidden, attempted)
+
+
+def stage_hits(selector, candidate, ids):
+    path, _, changes, inspect_mask = candidate
+    protected = replay_edit.preserve_scope(selector,path,inspect_mask,set(ids.values()))
     protected |= selector.tests_of(selector.M["opens"].get(path))
     protected.update(n for n,(raw,_) in selector.EXTRA.items() if path in raw)
     labels, members, stage_kinds = profile()
@@ -116,10 +114,39 @@ def refine(selector,text,selected,forbidden=(),attempted=None):
                     seen |= visits
             if wanted & full & ~seen:
                 blocked.add(kind)
-    selected_stages &= ~stage_decisions.unchanged_stages(selector,text,labels,selected_stages)
+    return selected_stages, blocked | {kind for kind, number in ids.items() if number in protected}
+
+
+def refine_parts(selector, parts, selected, forbidden=(), attempted=None):
+    ids = {kind: selector.NUM[node] for kind, node in query_replay.IDS.items()
+           if selector.NUM.get(node) in selected}
+    if not ids or not parts:
+        return None
+    labels, _, stage_kinds = profile()
+    selected_stages = 0
+    blocked = set()
+    edits = []
+    paths = set()
+    for part in parts:
+        candidate = analyze(selector, part)
+        if candidate is None or candidate[0] in paths:
+            return None
+        path, source, _, mask = candidate
+        paths.add(path)
+        hits = stage_hits(selector, candidate, ids)
+        if hits is None:
+            return None
+        stages, unknown = hits
+        if len(parts) == 1:
+            stages &= ~stage_decisions.unchanged_stages(selector, part, labels, stages)
+        selected_stages |= stages
+        blocked.update(unknown)
+        edits.append((path, source, mask))
     if selected_stages & stage_kinds["init"]:
         return None
-    jobs = {kind:{} for kind in ids if kind not in blocked and ids[kind] not in protected}
+    # A second edit can affect the input to a later query stage. Replay every
+    # reached stage with all patched modules present in the same process.
+    jobs = {kind: {} for kind in ids if kind not in blocked}
     while selected_stages:
         bit = selected_stages & -selected_stages
         selected_stages ^= bit
@@ -156,10 +183,9 @@ def refine(selector,text,selected,forbidden=(),attempted=None):
         possible = (selector.worker_cost(selector.split(selected-safe)) -
                     selector.worker_cost(selector.split(selected-safe-{ids[k] for k in pending})))/1000
         if possible >= 0.8:
-            line_mask = inspect_mask
             if attempted is not None:
                 attempted.update(ids[kind] for kind in pending)
-            verdict = query_replay.run_checks([(path,source,line_mask)],pending,
+            verdict = query_replay.run_checks(edits,pending,
                                               query_replay.replay_budget(possible),forbidden)
             safe.update(ids[k] for k in verdict)
     return selected-safe

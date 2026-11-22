@@ -91,9 +91,9 @@ def first_readers(selector, text, selected):
             result &= lookup.union(*(others for j, others in enumerate(direct) if j != i))
     return result
 
-def select(selector,text,default):
+def select(selector,text,default,deferred_edits):
     from replay_edit import possible_edit,preserve
-    import query_replay,flag_readers,predicate_select,condition_select
+    import flag_readers,predicate_select,condition_select
     parts=pieces(selector,text)
     if not parts:return None
     selections=[];edits=[];protected=set();all_function=True;paths=set()
@@ -119,7 +119,7 @@ def select(selector,text,default):
         selections.append(sel)
     selected=set.union(*selections)
     if all_function and edits:
-        selected=query_replay.refine_edits(selector,edits,selected)
+        deferred_edits.extend(edits)
     return selected|protected
 
 def fixture_mix(selector, text, selected):

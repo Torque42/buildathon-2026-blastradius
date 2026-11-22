@@ -1800,7 +1800,8 @@ def select_tests(text):
         if readers is not None and len(readers) <= 32 and sum(DUR[n] for n in readers) <= WORKER_MS:
             return import_impact.include(selector, text, readers), [label]
     sel, reasons = analyze(text)
-    combined=compound.select(selector,text,sel)
+    joint_edits = []
+    combined=compound.select(selector,text,sel,joint_edits)
     if "recursive-comparison" in reasons:
         sel=set(ALL)
     elif combined is not None:
@@ -1843,7 +1844,16 @@ def select_tests(text):
         sel = sel & equality
     if reasons == ["def-header"]:
         sel=constructor_inputs.refine(selector,text,sel)
-    if combined is None and "recursive-comparison" not in reasons:
+    parts = compound.pieces(selector, text)
+    if parts and "recursive-comparison" not in reasons:
+        attempted = set()
+        precise = query_phases.refine_parts(selector, parts, sel, attempted=attempted)
+        if precise is not None:
+            sel = precise
+        if joint_edits:
+            retained = set().union(*(replay_edit.preserve(selector, part, sel) for part in parts))
+            sel = query_replay.refine_edits(selector, joint_edits, sel, skip=attempted) | retained
+    elif combined is None and "recursive-comparison" not in reasons:
         sel = parse_replay.refine(selector, text, sel)
         retained = replay_edit.preserve(selector, text, sel)
         attempted = set()
