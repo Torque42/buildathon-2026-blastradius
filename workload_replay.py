@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from functools import lru_cache
+import ast
 import gzip
 import hashlib
 import dis
@@ -55,12 +56,33 @@ def children(code):
             yield from children(value)
 
 
+@lru_cache(12)
+def duplicate_definitions(source, names):
+    """Keep every full declaration of an overloaded, rebound or property name."""
+    wanted = set(names)
+    records = defaultdict(list)
+
+    def visit(body, prefix):
+        for item in body:
+            if isinstance(item, ast.ClassDef):
+                visit(item.body, (*prefix, item.name))
+            elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = ".".join((*prefix, item.name))
+                if name in wanted:
+                    records[name].append(ast.dump(item))
+
+    visit(ast.parse(source).body, ())
+    return dict(records)
+
+
 def body_edits(path, before, after):
     """Return potential first divergences in existing bodies, or an entire-module dependency."""
     shell, old_funcs, old_codes = function_changes.baseline(path, before)
     other_shell, new_funcs = function_changes.skeleton(after)
-    if (shell != other_shell or old_funcs.keys() != new_funcs.keys()
-            or None in old_funcs.values() or None in new_funcs.values()):
+    if shell != other_shell or old_funcs.keys() != new_funcs.keys():
+        return None
+    ambiguous = tuple(name for name in old_funcs if old_funcs[name] is None or new_funcs[name] is None)
+    if ambiguous and duplicate_definitions(before, ambiguous) != duplicate_definitions(after, ambiguous):
         return None
     changed = [name for name, row in old_funcs.items() if row != new_funcs[name]
                and (row is None or new_funcs[name] is None or row[1] != new_funcs[name][1])]
@@ -96,6 +118,7 @@ def body_edits(path, before, after):
     return affected
 
 
+@lru_cache(1)
 def prepare(selector, text):
     """Apply every hunk to the verified pin. An unknown file makes this verifier abstain."""
     edits, details, opaque, fixtures = {}, [], set(), set()
@@ -128,14 +151,40 @@ def prepare(selector, text):
         return edits, details, opaque, fixtures
 
 
-def file_readers(selector, paths):
+def file_readers(selector, paths, patches=()):
+    """Raw file readers observe every edit. Code-object readers observe their declarations."""
+    by_path = {p["old"]: p for p in patches}
     readers = set()
     for path in paths:
         readers.update(selector.tests_of(selector.M["opens"].get(path)))
         readers.update(n for n, (observed, _) in selector.EXTRA.items() if path in observed)
         lines = selector.profile()["code_reads"].get(path, ())
         if lines:
-            readers.update(replay_edit.preserve_scope(selector, path, sum(1 << n for n in set(lines)), selector.ALL))
+            observed = set(lines)
+            patch = by_path.get(path)
+            if patch and path in selector.SRC:
+                original = selector.SRC[path]
+                updated, removed, added = selector.apply(original, patch["hunks"])
+                same_positions = all(sum(line.startswith("-") for line in h["lines"]) ==
+                                     sum(line.startswith("+") for line in h["lines"]) for h in patch["hunks"])
+                if same_positions and len(original.splitlines()) == len(updated.splitlines()):
+                    # A delete followed by a later insert in one hunk can shift
+                    # positions between the edits, even when the net count is zero.
+                    changed = set(removed) | set(added)
+                    spans = []
+                    for h in patch["hunks"]:
+                        lo = h["os"]
+                        hi = lo + sum(row.startswith((" ", "-")) for row in h["lines"])
+                        within = [n for n in changed if lo <= n <= hi]
+                        if within:
+                            spans.append((min(within), max(within)))
+                    observed = {line for line in observed if any(a <= line <= b for a,b in spans)}
+                else:
+                    # Insertions and deletions can shift line numbers in every later function.
+                    start = min((h["os"] for h in patch["hunks"]), default=0)
+                    observed = {line for line in observed if line >= start}
+            if observed:
+                readers.update(replay_edit.preserve_scope(selector, path, sum(1 << n for n in observed), selector.ALL))
     return readers
 
 
@@ -285,16 +334,23 @@ def refine(selector, text, selected):
         if changes is None:
             return selected
         edits, details, opaque, fixtures = changes
-        protected = file_readers(selector, set(edits) | fixtures)
+        protected = file_readers(selector, set(edits) | fixtures, selector.parse_patch(text))
         if any(name.startswith("tests/fixtures/optimizer/tpc-") for name in fixtures):
             protected.update(n for kind, n in ids.items() if kind != "node")
         ids = {k: n for k, n in ids.items() if n not in protected}
+        import first_divergence
+        parts = first_divergence.components(selector, text)
+        opaque_for = {kind: opaque for kind in ids}
+        if opaque and parts and set(edits) | fixtures == parts.keys():
+            for kind, number in ids.items():
+                opaque_for[kind] = {path for path in opaque if
+                                    first_divergence.value_readers(selector, parts[path], {number})}
         passed = set()
-        if "node" in ids and verify_node(edits, details, opaque):
+        if "node" in ids and verify_node(edits, details, opaque_for["node"]):
             passed.add(ids["node"])
         needed = {}
         for kind in sorted(ids.keys() - {"node"}):
-            jobs = executor_jobs(kind, details, opaque)
+            jobs = executor_jobs(kind, details, opaque_for[kind])
             if jobs is not None:
                 if jobs:
                     needed[kind] = jobs
