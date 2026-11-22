@@ -105,11 +105,8 @@ def verify(path, names, rows):
     functions = [n for n in mod.body if isinstance(n,ast.FunctionDef) and
                  n.name in ("parse_and_optimize","pushdown_projections","pushdown_ctes")]
     functions += [n for n in helpers.body if isinstance(n,ast.FunctionDef) and n.name=="string_to_bool"]
-    functions += [methods["check_file"], *(methods[n] for n in allowed.get(path,()) if n in names)]
+    functions += [methods["setUp"], methods["check_file"], *(methods[n] for n in allowed.get(path,()) if n in names)]
     exec(compile(ast.Module(body=functions,type_ignores=[]),str(PIN/MODULE),"exec",dont_inherit=True),namespace)
-    setup = methods["setUp"]
-    schema = next(ast.literal_eval(s.value) for s in setup.body if isinstance(s,ast.Assign) and
-                  len(s.targets)==1 and isinstance(s.targets[0],ast.Attribute) and s.targets[0].attr=="schema")
     class Pool:
         def submit(self, fn, *args, **kwargs):
             future = Future()
@@ -140,8 +137,8 @@ def verify(path, names, rows):
     def run(name, row):
         case = Case()
         case.pool, case.conn = Pool(), SQL()
-        case.schema = pickle.loads(pickle.dumps(schema))
         sqlglot.schema = MappingSchema()
+        namespace["setUp"](case)
         namespace["load_sql_fixture_pairs"] = lambda _file: [row]
         namespace[name](case)
         if len(case.conn.queries) not in (0,2): raise ValueError
