@@ -12,6 +12,8 @@ from replay_edit import preserve_scope
 
 BLOCK_WORDS = re.compile(r"\b(open|exec|eval|globals|locals|vars|setattr|delattr|print|logger|warnings|sys|os|random|time|global|nonlocal|import|yield|await)\b|__")
 spent = 0.0
+FOLDERS = ("sqlglot/optimizer/", "sqlglot/parsers/", "sqlglot/generators/", "sqlglot/dialects/")
+MODULES = {"sqlglot/parser.py", "sqlglot/generator.py", "sqlglot/tokenizer_core.py"}
 
 
 def cpu():
@@ -21,7 +23,7 @@ def cpu():
 
 def functions(selector, patch):
     path = patch["old"]
-    if (not path or patch["new"] != path or not path.startswith("sqlglot/optimizer/")
+    if (not path or patch["new"] != path or not (path.startswith(FOLDERS) or path in MODULES)
             or path not in selector.SRC or path in selector.profile()["source_reads"]):
         return
     lines = [line[1:] for h in patch["hunks"] for line in h["lines"] if line.startswith(("+","-"))]
@@ -114,7 +116,7 @@ def work(selector, patch, ids):
 
 def refine(selector, text, selected):
     global spent
-    if spent>=7.0 or "sqlglot/optimizer/" not in text:
+    if spent>=7.0:
         return selected
     ids = {k:selector.NUM[node] for k,node in query_replay.IDS.items() if selector.NUM.get(node) in selected}
     if not ids:
@@ -124,18 +126,35 @@ def refine(selector, text, selected):
     if not ids:
         return selected
     patches = selector.parse_patch(text)
-    if len(patches)!=1:
+    if not 1<=len(patches)<=3 or len({p["old"] for p in patches})!=len(patches):
         return selected
     start = cpu()
     try:
-        data = work(selector,patches[0],ids)
-        if data is None:
-            return selected
-        edit, rows = data
+        edits = []
+        joined = {k:{} for k in ids}
+        for patch in patches:
+            data = work(selector,patch,ids)
+            if data is None:
+                return selected
+            edit, affected = data
+            edits.append(edit)
+            for kind in list(joined):
+                if kind not in affected:
+                    del joined[kind]
+                    continue
+                for index, stages, rules in affected[kind]:
+                    combined, numbers = joined[kind].setdefault(index,(set(),set()))
+                    combined.update(stages)
+                    if rules is None:
+                        joined[kind][index] = combined, None
+                    elif numbers is not None:
+                        numbers.update(rules)
+        rows = {k:[(i,sorted(stages),sorted(rules) if rules is not None else None)
+                   for i,(stages,rules) in sorted(queries.items())] for k,queries in joined.items()}
         keep = {k for k,jobs in rows.items() if not jobs}
         pending = {k:jobs for k,jobs in rows.items() if jobs}
         if pending:
-            keep.update(query_replay.run_checks([edit],pending,min(5.5,7.0-spent),()))
+            keep.update(query_replay.run_checks(edits,pending,min(5.5,7.0-spent),()))
         return selected-{ids[k] for k in keep}
     finally:
         spent += max(0,cpu()-start)
