@@ -33,6 +33,7 @@ import compound
 import isolated_imports
 import validation_inputs
 import fixture_inputs
+import fixture_query_trials
 import fixture_assertions
 import observed_inputs
 import instruction_impact
@@ -1887,6 +1888,7 @@ def select_tests(text):
     if reasons == ["def-header"]:
         sel=constructor_inputs.refine(selector,text,sel)
     sel = fixture_assertions.refine(selector, text, sel)
+    sel = fixture_query_trials.refine(selector, text, sel)
     sel = guard_edits.refine(selector, text, sel)
     parts = compound.pieces(selector, text)
     if parts and "recursive-comparison" not in reasons:
