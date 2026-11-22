@@ -9,6 +9,7 @@ from pathlib import Path
 import function_changes
 import instruction_impact
 import replay_edit
+import dispatch_deletions
 
 
 @lru_cache(1)
@@ -147,11 +148,22 @@ def refine(s,text,selected):
                 path!=p["new"] or path not in s.SRC or path in edits or path in s.profile()["source_reads"]):
             return selected
         edits[path]=s.apply(s.SRC[path],p["hunks"])
+    by_file={};cls_readers={}
+    for path,(source,_,_) in edits.items():
+        removed=removed_types(s,path,source)
+        if not removed:continue
+        result=type_readers(s,path,removed,edits)
+        if result is not None:
+            by_file[path]=result
+            cls_readers.update((node.name,result) for node in removed)
     union=set();refined=False
     for p in parts:
         path=p["old"];source=edits[path][0]
-        removed=removed_types(s,path,source)
-        keep=type_readers(s,path,removed,edits) if removed else body_readers(s,path,source)
+        keep=by_file.get(path)
+        if keep is None:
+            keep=dispatch_deletions.readers(s,path,source,cls_readers)
+        if keep is None:
+            keep=body_readers(s,path,source)
         if keep is None:
             reasons=[]
             keep=s.analyze_py_source(path,p,reasons,False)|s.tests_of(s.M["opens"].get(path))
