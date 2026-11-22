@@ -8,6 +8,7 @@ import os
 import re
 import signal
 import sys
+import tempfile
 
 import binding_state
 import instruction_impact
@@ -28,7 +29,9 @@ def profile():
 
 
 def describe(selector, edits, words):
-    if words & (parser_contract.DYNAMIC | workload_replay.PERSISTENT_OPERATIONS):
+    guarded_reads = {"EXPRESSION_METADATA", "expression_metadata", "BINARY_COERCIONS", "binary_coercions",
+                     "_CANONICALIZE_TYPES", "__instancecheck__", "__subclasscheck__", "__iter__"}
+    if words & (parser_contract.DYNAMIC | workload_replay.PERSISTENT_OPERATIONS | guarded_reads):
         return
     details, canonical = [], {}
     for path, after in edits.items():
@@ -65,8 +68,52 @@ def describe(selector, edits, words):
     return details, canonical
 
 
-def inspect(edits, states, canonical, words, report, log):
+def setup(edits):
     import unittest
+    import query_state
+    root = (binding_state.ROOT / "cache/pinned").resolve()
+    sys.path.insert(0, str(root))
+    for path, source in edits.items():
+        sys.meta_path.insert(0, replay_edit.Overlay(path, source, root))
+    query_state.load_modules(profile()[2])
+
+
+@lru_cache(1)
+def process_reference():
+    # Hash randomization affects the order of several dicts built from sets.
+    # Both siblings must import the pinned modules with the same hash seed,
+    # directory and module order. The clean parent never imports SQLGlot.
+    import query_state
+    with tempfile.TemporaryFile() as stream:
+        pid = os.fork()
+        if pid == 0:
+            answer = 1
+            try:
+                signal.signal(signal.SIGPROF, signal.SIG_DFL)
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
+                signal.setitimer(signal.ITIMER_PROF, 1.8)
+                signal.alarm(4)
+                setup({})
+                finger = binding_state.Fingerprints()
+                resolved, keys, truth = {}, {}, []
+                for desc, _, _ in profile()[-1]:
+                    try:
+                        value = query_state.projected(desc, finger, resolved, keys) if desc[0] != "*" else None
+                    except errors:
+                        value = None
+                    truth.append(value)
+                marshal.dump(truth, stream)
+                stream.flush()
+                answer = 0
+            finally:
+                os._exit(answer)
+        if os.waitpid(pid, 0)[1]:
+            return
+        stream.seek(0)
+        return marshal.load(stream)
+
+
+def inspect(edits, states, canonical, words, reference, report, log):
     import query_state
     version, labels, names, uncertain, rows = profile()
     _, _, kinds = query_phases.profile()
@@ -80,16 +127,12 @@ def inspect(edits, states, canonical, words, report, log):
                 opened.add(path)
 
     sys.addaudithook(watch)
-    root = binding_state.ROOT / "cache/pinned"
-    sys.path.insert(0, str(root))
-    for path, source in edits.items():
-        sys.meta_path.insert(0, replay_edit.Overlay(path, source, root))
-    query_state.load_modules(names)
+    setup(edits)
     finger = binding_state.Fingerprints(canonical)
     resolved, keys = {}, {}
     changed = uncertain
     reasons = []
-    for desc, expected, mask in rows:
+    for (desc, _, mask), expected in zip(rows, reference, strict=True):
         if desc[0] == "*":
             different = desc[2] in words
         else:
@@ -129,6 +172,9 @@ def inspect(edits, states, canonical, words, report, log):
 
 
 def check(edits, states, canonical, words, budget):
+    reference = process_reference()
+    if reference is None:
+        return set()
     rd, wr = os.pipe()
     try:
         pid = os.fork()
@@ -148,7 +194,8 @@ def check(edits, states, canonical, words, budget):
                 os.dup2(sink.fileno(), 1)
                 if not log:
                     os.dup2(sink.fileno(), 2)
-            inspect(edits, states, canonical, words, lambda kind: os.write(wr, (kind+"\n").encode()), log)
+            inspect(edits, states, canonical, words, reference,
+                    lambda kind: os.write(wr, (kind+"\n").encode()), log)
         finally:
             os._exit(0)
     os.close(wr)

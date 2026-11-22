@@ -42,6 +42,20 @@ def projected(desc, finger, resolved, keys):
     value=resolved[scope]
     mode, symbol=desc[3:]
     if not mode:
+        # On the pin these tables are spread into other lookup tables or
+        # consumed by TypeAnnotator.get, membership and keyed subscripting.
+        # Their construction iterates sets of class objects. Class allocation
+        # addresses can change their insertion order between two imports.
+        if (scope[2] in {"EXPRESSION_METADATA", "BINARY_COERCIONS"}
+                and type(value) is dict):
+            material = sorted(binding_state.digest([finger.hash(k), finger.hash(v)])
+                              for k,v in value.items())
+            return binding_state.digest([b"lookup contents", *material])
+        if scope == ("sqlglot.optimizer.canonicalize", "", "_CANONICALIZE_TYPES"):
+            # Its sole consumer is isinstance(node, tuple_of_types).
+            if type(value) is tuple and all(isinstance(cls,type)
+                    and type(cls).__instancecheck__ is type.__instancecheck__ for cls in value):
+                return binding_state.digest([b"isinstance types", *sorted(finger.hash(cls) for cls in value)])
         return finger.hash(value)
     if symbol not in keys:
         keys[symbol]=key_value(symbol)
