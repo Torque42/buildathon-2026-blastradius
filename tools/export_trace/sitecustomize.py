@@ -120,7 +120,7 @@ def install(module):
                 child.__class__=Namespace
     def wrap(original):
         @functools.wraps(original)
-        def init(instance,*args,**kwargs):
+        def init(instance,/,*args,**kwargs):
             name=type(instance).__name__
             if name in eligible:
                 record(name,sys._getframe(1))
