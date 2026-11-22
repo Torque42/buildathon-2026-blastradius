@@ -33,6 +33,7 @@ import compound
 import isolated_imports
 import validation_inputs
 import fixture_inputs
+import registry_edits
 import callback_consumers
 import fixture_query_trials
 import fixture_assertions
@@ -1868,6 +1869,7 @@ def select_tests(text):
         sel=compound.fixture_mix(selector,text,sel)
         sel=compound.first_readers(selector,text,sel)
     sel=parser_table_keys.refine(selector,text,sel)
+    sel=registry_edits.refine(selector,text,sel)
     sel=schema_keys.refine(selector,text,sel)
     sel=registry_inputs.include(selector,text,sel)
     if "recursive-comparison" not in reasons:

@@ -44,3 +44,10 @@ from callback_consumers import collect
 callbacks = {path: collect(path, ast.parse(source)) for path, source in sources.items()
              if path.startswith(("sqlglot/parsers/", "sqlglot/generators/")) and path.endswith(".py")}
 (cache/"callback-entries").write_bytes(marshal.dumps(callbacks))
+
+# Resolve ordinary descriptors on the actual pinned expression classes.
+import inspect
+from sqlglot import exp
+constructors = {name for name, cls in vars(exp).items() if isinstance(cls, type)
+                and issubclass(cls, exp.Expr) and isinstance(inspect.getattr_static(cls,"from_arg_list",None), classmethod)}
+(cache/"dispatch-constructors").write_bytes(marshal.dumps(sorted(constructors)))
