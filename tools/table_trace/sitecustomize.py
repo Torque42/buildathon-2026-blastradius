@@ -8,9 +8,18 @@ import importlib.machinery
 import json
 import os
 import sys
+from enum import Enum
 from pathlib import Path
 
 TABLES = {"FUNCTIONS", "FUNCTION_PARSERS", "NO_PAREN_FUNCTION_PARSERS"}
+dispatch_mode = os.environ.get("BR_DIALECT_TABLES") == "1"
+if dispatch_mode:
+    TABLES |= set(("TRANSFORMS TYPE_MAPPING PROPERTIES_LOCATION JSON_PATH_PART_TRANSFORMS "
+                  "STATEMENT_PARSERS EXPRESSION_PARSERS PROPERTY_PARSERS PRIMARY_PARSERS "
+                  "STRING_PARSERS NUMERIC_PARSERS RANGE_PARSERS QUERY_MODIFIER_PARSERS "
+                  "CONSTRAINT_PARSERS ALTER_PARSERS ALTER_ALTER_PARSERS SET_PARSERS SHOW_PARSERS "
+                  "TYPE_CONVERTERS TYPE_LITERAL_PARSERS LAMBDAS COLUMN_OPERATORS JSON_OPERATORS "
+                  "EQUALITY COMPARISON BITWISE TERM FACTOR EXPONENT _dispatch").split())
 active = os.environ.get("BR_FLAG_TEST","")
 imports = []
 reads = {}
@@ -18,6 +27,8 @@ sites = set()
 seen = {}
 
 def owner(obj, name):
+    if dispatch_mode and name=="_dispatch":
+        name="TRANSFORMS"
     cls = obj if isinstance(obj,type) else type(obj)
     ck = (cls,name)
     if ck not in seen:
@@ -33,8 +44,14 @@ def owner(obj, name):
 def mark(site, key):
     if not site:
         return
-    if type(key) is not str:
-        key = "*"
+    if dispatch_mode and isinstance(key,type) and key.__module__.startswith("sqlglot.expressions"):
+        key="expr:"+key.__name__
+    elif dispatch_mode and isinstance(key,Enum):
+        key="enum:"+key.name
+    elif dispatch_mode and type(key) is str and key!="*":
+        key="string:"+key
+    elif type(key) is not str:
+        key="*"
     context = active
     if imports:
         file = imports[-1]
@@ -75,7 +92,11 @@ def variables(fn,obj):
     return fn(obj)
 
 def attr_table(n):
-    return isinstance(n,ast.Attribute) and n.attr in TABLES and isinstance(n.value,ast.Name) and isinstance(n.ctx,ast.Load)
+    base=getattr(n,"value",None)
+    if dispatch_mode:
+        while isinstance(base,ast.Attribute):
+            base=base.value
+    return isinstance(n,ast.Attribute) and n.attr in TABLES and isinstance(base,ast.Name) and isinstance(n.ctx,ast.Load)
 
 def enclosing(node,parents,kind):
     while node in parents:
@@ -105,10 +126,20 @@ def single_copy(node,parents):
             return False
         if [table.key.id,table.value.id]!=[n.id for n in keys]:
             return False
-        if any(not isinstance(n,ast.Compare) or not isinstance(n.left,ast.Name) or n.left.id!=keys[0].id
-               or len(n.ops)!=1 or not isinstance(n.ops[0],(ast.Eq,ast.NotEq)) or len(n.comparators)!=1
-               or not isinstance(n.comparators[0],ast.Constant) or type(n.comparators[0].value) is not str
-               for n in comp.ifs):
+        def literal_key(node):
+            return ((isinstance(node,ast.Constant) and type(node.value) is str) or
+                    (isinstance(node,ast.Attribute) and isinstance(node.value,ast.Name) and
+                     node.value.id in {"exp","TokenType","DType"} and not node.attr.startswith("_")))
+        def key_filter(n):
+            if (not isinstance(n,ast.Compare) or not isinstance(n.left,ast.Name)
+                    or n.left.id!=keys[0].id or len(n.ops)!=1 or len(n.comparators)!=1):
+                return False
+            rhs=n.comparators[0]
+            if isinstance(n.ops[0],(ast.Eq,ast.NotEq)):
+                return literal_key(rhs)
+            return (dispatch_mode and isinstance(n.ops[0],(ast.In,ast.NotIn))
+                    and isinstance(rhs,(ast.Tuple,ast.List,ast.Set)) and all(literal_key(k) for k in rhs.elts))
+        if not all(key_filter(n) for n in comp.ifs):
             return False
         spread=table
         outer=parents.get(table)
@@ -144,17 +175,29 @@ class Loader(importlib.machinery.SourceFileLoader):
                 p=parents.get(node)
                 if not isinstance(node.ctx,ast.Load) or node.attr not in TABLES:
                     return self.generic_visit(node)
+                if dispatch_mode and name=="sqlglot.generator" and node.attr=="TRANSFORMS":
+                    fn=enclosing(node,parents,ast.FunctionDef)
+                    if (fn is not None and fn.name=="_build_dispatch" and isinstance(p,ast.Call) and
+                            isinstance(p.func,ast.Name) and p.func.id=="dict" and p.args==[node]):
+                        # Generator.sql consumes the completed dictionary through self._dispatch.
+                        return node
                 if single_copy(node,parents):
                     cls=enclosing(node,parents,ast.ClassDef)
                     if cls is not None:
-                        target=name+":"+cls.name+":"+node.attr
+                        containing=[]
+                        parent=cls
+                        while parent is not None:
+                            if isinstance(parent,ast.ClassDef):
+                                containing.append(parent.name)
+                            parent=parents.get(parent)
+                        target=name+":"+".".join(reversed(containing))+":"+node.attr
                         return ast.copy_location(call("_br_table_copy",self.visit(node.value),ast.Constant(node.attr),ast.Constant(target)),node)
                 if attr_table(node):
                     key = None
                     g=parents.get(p)
                     if isinstance(p,ast.Subscript) and p.value is node:
                         key=p.slice
-                    elif isinstance(p,ast.Attribute) and p.attr=="get" and isinstance(g,ast.Call) and g.func is p and g.args:
+                    elif isinstance(p,ast.Attribute) and (p.attr=="get" or dispatch_mode and p.attr in ("pop","setdefault")) and isinstance(g,ast.Call) and g.func is p and g.args:
                         key=g.args[0]
                     elif isinstance(p,ast.Compare) and len(p.ops)==1 and p.comparators[0] is node and isinstance(p.ops[0],(ast.In,ast.NotIn)):
                         # The left side has already been transformed. Re-evaluate only the plain owner name.

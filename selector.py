@@ -52,6 +52,7 @@ import shortlist
 import workload_replay
 import callback_consumers
 import query_corpus
+import dispatch_delta
 import type_assertions
 import slot_inputs
 import import_impact
@@ -1898,34 +1899,61 @@ def select_tests(text):
     return import_impact.include(selector, text, sel), reasons
 
 
+def replay_value(text, selected):
+    # Expensive replays compete for a batch CPU budget. Measure the schedule
+    # with and without their actual candidate tests before ordering the work.
+    long_ids={NUM[node] for node in (workload_replay.NODE,*query_replay.IDS.values(),type_assertions.NODE)
+              if NUM.get(node) in selected}
+    if not long_ids:
+        return 0.0
+    cost=worker_cost(split(selected))
+    gain=cost-worker_cost(split(selected-long_ids))
+    parts=parse_patch(text)
+    changed=sum(line.startswith(("+","-")) for part in parts for h in part["hunks"] for line in h["lines"])
+    return gain/(1+0.05*(len(parts)-1)+0.012*min(120,changed))
+
+
 def main():
-    total = 0
-    for p in sorted((DATA / "commits").glob("*.patch")):
-        text = ""
+    selector=sys.modules[__name__]
+    rows=[]
+    for path in sorted((DATA/"commits").glob("*.patch")):
+        text=""
         _applied.clear()
         try:
-            text = p.read_text("utf-8", errors="replace")
-            selector = sys.modules[__name__]
-            text, comment_readers = comment_layers.simplify(selector, text)
-            sel, reasons = select_tests(text)
-            if not comment_readers:
-                sel = shortlist.refine(selector, text, sel)
-            sel = sel | comment_readers
-            if collection_guard.failed(selector, text, sel):
-                sel = collection_guard.include_failed(selector, text, sel)
+            text=path.read_text("utf-8",errors="replace")
+            text,comments=comment_layers.simplify(selector,text)
+            selected,reasons=select_tests(text)
+            if not comments:
+                selected=shortlist.refine(selector,text,selected)
+            selected=selected|comments
+            verify=not comments
+            if collection_guard.failed(selector,text,selected):
+                selected=collection_guard.include_failed(selector,text,selected)
                 reasons.append("collection-failed")
-            elif not comment_readers:
-                sel = workload_replay.refine(selector, text, sel)
-                sel = query_corpus.refine(selector, text, sel)
-                sel = type_assertions.refine(selector,text,sel)
-            sel = callback_consumers.include(selector, text, sel)
-        except Exception as e:  # never crash: run everything
-            sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
-        workers = covered_schedule(text, sel)
-        cost = worker_cost(workers)
-        total += cost
-        log(f"{p.stem}: {sum(map(len, workers))} tests, cost {cost/1000:.1f}s, {sorted(set(reasons))[:6]}")
-        print(json.dumps({"commit": p.stem, "workers": workers}, separators=(",", ":")))
+                verify=False
+            elif verify:
+                selected=dispatch_delta.refine(selector,text,selected)
+            priority=replay_value(text,selected) if verify else 0
+        except Exception as exc:
+            selected,reasons,verify,priority=set(ALL),["error:"+repr(exc)[:80]],False,0
+        rows.append((priority,path.stem,text,selected,reasons,verify))
+
+    total=0
+    for priority,identifier,text,selected,reasons,verify in sorted(rows,key=lambda row:-row[0]):
+        _applied.clear()
+        try:
+            if verify:
+                selected=workload_replay.refine(selector,text,selected)
+                selected=query_corpus.refine(selector,text,selected)
+                selected=type_assertions.refine(selector,text,selected)
+            selected=callback_consumers.include(selector,text,selected)
+        except Exception as exc:
+            selected,reasons=set(ALL),["error:"+repr(exc)[:80]]
+        workers=covered_schedule(text,selected)
+        cost=worker_cost(workers)
+        total+=cost
+        log(f"{identifier}: {sum(map(len,workers))} tests, cost {cost/1000:.1f}s, {sorted(set(reasons))[:6]}")
+        print(json.dumps({"commit":identifier,"workers":workers},separators=(",",":")))
     log(f"estimated simulated total {total/1000:.1f}s")
 
 

@@ -96,6 +96,7 @@ def body_edits(path, before, after):
     return affected
 
 
+@lru_cache(2)
 def prepare(selector, text):
     """Apply every hunk to the verified pin. An unknown file makes this verifier abstain."""
     edits, details, opaque, fixtures = {}, [], set(), set()
