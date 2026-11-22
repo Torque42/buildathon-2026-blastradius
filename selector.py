@@ -52,6 +52,7 @@ import shortlist
 import slot_inputs
 import import_impact
 import replay_edit
+import deleted_guards
 WORKER_MS = 2000
 
 
@@ -1817,6 +1818,9 @@ def select_tests(text):
     selector = sys.modules[__name__]
     if import_impact.changes_class_hook(selector, text):
         return set(ALL), ["class-initialization"]
+    guarded = deleted_guards.match(selector, text)
+    if guarded is not None:
+        return import_impact.include(selector, text, guarded), ["deleted-runtime-guard"]
     # A complete small reader set can be scheduled immediately. Larger reader
     # sets still benefit from the existing per-query and instruction refinements.
     classes = class_comparisons.match(selector, text)
