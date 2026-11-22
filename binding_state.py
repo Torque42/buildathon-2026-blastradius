@@ -36,7 +36,15 @@ def ident(obj):
     return (obj.__module__ + "." + obj.__qualname__).encode()
 
 
+_software_hashes = {}
+
+
 def code_hash(code):
+    # CPython code objects are immutable. Keys retain the actual object to avoid
+    # confusing a newly allocated code object with a reused address.
+    key = id(code)
+    if key in _software_hashes:
+        return _software_hashes[key][1]
     constants = []
     for value in code.co_consts:
         if type(value) is types.CodeType:
@@ -47,7 +55,11 @@ def code_hash(code):
             constants.append(repr(value).encode())
     structural = (code.co_argcount, code.co_kwonlyargcount, code.co_posonlyargcount, code.co_flags,
                   code.co_varnames, code.co_names, code.co_cellvars, code.co_freevars)
-    return digest([code.co_code, code.co_exceptiontable, repr(structural).encode(), *constants])
+    result = digest([code.co_code, code.co_exceptiontable, repr(structural).encode(), *constants])
+    if len(_software_hashes) >= 8192:
+        _software_hashes.clear()
+    _software_hashes[key] = code, result
+    return result
 
 
 class Fingerprints:

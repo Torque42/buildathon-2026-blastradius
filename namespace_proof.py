@@ -79,9 +79,13 @@ def namespace_changes(a, b):
         return False
     for key in old.keys() | new.keys():
         left, right = old.get(key), new.get(key)
-        if same(left, right):
-            continue
         kind, name, _ = key
+        # Matching class and ordinary method bodies are checked below. Dumping
+        # their entire syntax trees first duplicates work on large parser files.
+        check_header = left is not None and right is not None and (
+            kind == 'class' or kind == 'function' and name not in DYNAMIC)
+        if not check_header and same(left, right):
+            continue
         if kind == "doc":
             continue
         if kind == "class":

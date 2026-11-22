@@ -10,4 +10,6 @@ COPY tools/cache_row_scans.py /app/tools/
 RUN python -I /app/tools/cache_row_scans.py
 COPY tools/cache_parser_frontiers.py /app/tools/
 RUN python -I /app/tools/cache_parser_frontiers.py
+COPY tools/cache_parser_reference.py /app/tools/
+RUN python -I /app/tools/cache_parser_reference.py
 CMD ["python", "-I", "/app/selector.py"]

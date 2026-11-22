@@ -13,6 +13,8 @@ import tempfile
 
 import binding_state
 import declaration_guard
+import function_changes
+import namespace_proof
 import instruction_impact
 import replay_edit
 import shortlist
@@ -61,12 +63,12 @@ def stages(selector,text,edits):
         return
     eligible={name for name in used if not words.intersection(supers.get(name,()))}
     for path,new in edits.items():
-        if not declaration_guard.namespace_changes(selector.source_tree(path).body,declaration_guard.syntax(new).body):
+        if not namespace_proof.declarations_only(selector.SRC[path],new):
             return
         relevant=[(phase,key,mask) for phase in eligible for key,mask in used[phase].items() if key[0]==path]
         if not relevant:
             continue
-        old_code=declaration_guard.compiled(path,selector.SRC[path])
+        old_code=function_changes.baseline(path,selector.SRC[path])[2]
         new_code=declaration_guard.compiled(path,new)
         for phase,(_,name,line,digest),mask in relevant:
             if phase not in eligible:
@@ -225,6 +227,11 @@ def fork_run(root,edits,eligible,budget,reference=None,baseline=False,allow_full
 
 @lru_cache(1)
 def pristine():
+    cached=ROOT/'cache/parser-reference'
+    if cached.is_file():
+        version,reference=marshal.loads(cached.read_bytes())
+        if tuple(version)==sys.version_info[:3] and reference:
+            return reference
     return fork_run(shortlist.PIN,{},{"tokenizer","parser"},1.8,baseline=True)
 
 
