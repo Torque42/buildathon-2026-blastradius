@@ -1778,6 +1778,40 @@ def covered_schedule(text, selected):
     return workers
 
 
+def refine_small_readers(selector, text, readers):
+    """A nonempty candidate can still be harmless at all of its observed call sites."""
+    if not readers:
+        return readers
+    changes = parse_patch(text)
+    if len(changes) != 1:
+        return readers
+    patch = changes[0]
+    path = patch["old"]
+    if not path or path != patch["new"] or path not in SRC:
+        return readers
+    original = SRC[path]
+    new, removed, added = apply(original, patch["hunks"])
+    if len(removed) != 1 or len(added) != 1:
+        return readers
+    line = removed[0]
+    protected = tests_of(M["opens"].get(path))
+    protected.update(n for n, (files, _) in EXTRA.items() if path in files)
+    protected.update(replay_edit.preserve_scope(selector, path, 1 << line, readers))
+
+    records = FACTS.get("fields", {}).get(path, {}).get(line)
+    if records:
+        before, after = original.splitlines(), new.splitlines()
+        if before[:line-1] == after[:line-1] and before[line:] == after[line:]:
+            verdict = indexed_certificate(path, line, before[line-1], after[line-1], records)
+            if isinstance(verdict, str) and verdict in {"equivalent-by-source", "unequal-tuple-shapes",
+                                                        "fresh-expression-copy", "unused-factory", "unchanged-validation"}:
+                return readers & protected
+    kept = access_select.refine(selector, text, readers)
+    kept = branch_select.refine(selector, text, kept)
+    kept = predicate_select.refine(selector, text, kept)
+    return readers & (kept | protected)
+
+
 def select_tests(text):
     selector = sys.modules[__name__]
     if import_impact.changes_class_hook(selector, text):
@@ -1796,8 +1830,14 @@ def select_tests(text):
     lexical = lexical_inputs.refine(selector, text, ALL)
     if lexical is ALL:
         lexical = None
-    for label, readers in (("class-comparison", classes), ("argument-read", arguments), ("identity-semantics", equality), ("initial-value", slots), ("dictionary-read", dictionary), ("keyword-read", lexical)):
-        if readers is not None and len(readers) <= 32 and sum(DUR[n] for n in readers) <= WORKER_MS:
+    evidence = [("class-comparison", classes), ("argument-read", arguments), ("identity-semantics", equality),
+                ("initial-value", slots), ("dictionary-read", dictionary), ("keyword-read", lexical)]
+    matched = [(label, tests) for label, tests in evidence if tests is not None]
+    if matched:
+        label, smallest = min(matched, key=lambda pair: len(pair[1]))
+        if len(smallest) <= 32 and sum(DUR[n] for n in smallest) <= WORKER_MS:
+            readers = set.intersection(*(tests for _, tests in matched))
+            readers = refine_small_readers(selector, text, readers)
             return import_impact.include(selector, text, readers), [label]
     sel, reasons = analyze(text)
     joint_edits = []
