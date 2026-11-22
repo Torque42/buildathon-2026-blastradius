@@ -38,3 +38,9 @@ if (r/"parser_table_keys.py").is_file():
     entries={path:collect_entries(path,ast.parse(source)) for path,source in sources.items()
              if path=="sqlglot/parser.py" or path.startswith("sqlglot/parsers/") and path.endswith(".py")}
     (cache/"parser-table-entries").write_bytes(marshal.dumps(entries))
+
+# Index entire callback entries, including multiline keys and factories.
+from callback_consumers import collect
+callbacks = {path: collect(path, ast.parse(source)) for path, source in sources.items()
+             if path.startswith(("sqlglot/parsers/", "sqlglot/generators/")) and path.endswith(".py")}
+(cache/"callback-entries").write_bytes(marshal.dumps(callbacks))

@@ -33,6 +33,7 @@ import compound
 import isolated_imports
 import validation_inputs
 import fixture_inputs
+import callback_consumers
 import fixture_query_trials
 import fixture_assertions
 import observed_inputs
@@ -1919,7 +1920,7 @@ def main():
             selector = sys.modules[__name__]
             text, comment_readers = comment_layers.simplify(selector, text)
             sel, reasons = select_tests(text)
-            sel = sel | comment_readers
+            sel = callback_consumers.include(selector, text, sel) | comment_readers
             if collection_guard.failed(selector, text, sel):
                 sel = collection_guard.include_failed(selector, text, sel)
                 reasons.append("collection-failed")
