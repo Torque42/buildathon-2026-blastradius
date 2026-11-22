@@ -55,6 +55,7 @@ def children(code):
             yield from children(value)
 
 
+@lru_cache(12)
 def body_edits(path, before, after):
     """Return potential first divergences in existing bodies, or an entire-module dependency."""
     shell, old_funcs, old_codes = function_changes.baseline(path, before)
