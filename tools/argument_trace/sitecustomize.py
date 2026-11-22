@@ -44,13 +44,21 @@ if "BR_ARG_PIN" in os.environ:
         path = code.co_filename[len(str(pin))+1:]
         calls, defaults, _ = source_sites(path)
         call_at, loads, stores = {}, {}, {}
+        previous = None
         for ins in dis.get_instructions(code):
             if ins.opname in ("CALL", "CALL_KW", "CALL_FUNCTION_EX"):
                 p = ins.positions
                 site = calls.get((p.lineno, p.col_offset, p.end_lineno, p.end_col_offset))
-                if site:
-                    call_at[ins.offset] = site
-                    registered.update(site.values())
+                names = ()
+                # CPython 3.13 CALL_KW consumes this constant tuple immediately
+                # after the argument values. Their values can be arbitrary.
+                if (ins.opname == "CALL_KW" and previous and previous.opname == "LOAD_CONST"
+                        and type(previous.argval) is tuple and all(type(k) is str for k in previous.argval)):
+                    names = previous.argval
+                if site or names:
+                    call_at[ins.offset] = (site or {}, names)
+                    if site:
+                        registered.update(site.values())
             if "FAST" in ins.opname:
                 names = ins.argval if isinstance(ins.argval, tuple) else (ins.argval,)
                 if ins.opname == "STORE_FAST_LOAD_FAST":
@@ -61,15 +69,19 @@ if "BR_ARG_PIN" in os.environ:
                     loads[ins.offset] = names
                 elif "STORE" in ins.opname or "DELETE" in ins.opname:
                     stores[ins.offset] = names
+            previous = ins
         params = defaults.get((code.co_firstlineno, code.co_name), {})
         registered.update(site for site, _ in params.values())
         opaque = bool(set(code.co_names) & reflective or code.co_flags & (0x20|0x80|0x200))
         return call_at, loads, stores, params, opaque
 
     def call(code, offset, fn, arg0):
-        sites = programs[code][0].get(offset)
-        if sites is None:
+        entry = programs[code][0].get(offset)
+        if entry is None:
             return monitor.DISABLE
+        sites, keywords = entry
+        caller = sys._getframe(1)
+        calling.pop(id(caller), None)
         ctx = context()
         if type(fn) is types.MethodType:
             fn = fn.__func__
@@ -78,8 +90,7 @@ if "BR_ARG_PIN" in os.environ:
                 retain(key, ctx)
             return
         target = fn.__code__
-        caller = sys._getframe(1)
-        calling[id(caller)] = (target, offset, sites, ctx)
+        calling[id(caller)] = (target, offset, sites, ctx, keywords, code)
         for key in sites.values():
             ref = (key, ctx)
             calls_seen[ref] = calls_seen.get(ref, 0) + 1
@@ -98,9 +109,11 @@ if "BR_ARG_PIN" in os.environ:
         owner = frame.f_back
         origin = calling.get(id(owner))
         explicit = {}
+        supplied = ()
         ctx = context()
-        if origin and origin[0] is code and origin[1] == owner.f_lasti:
-            _, _, explicit, ctx = calling.pop(id(owner))
+        if origin and origin[0] is code and origin[1] == owner.f_lasti and origin[5] is owner.f_code:
+            _, _, explicit, ctx, supplied, _ = calling.pop(id(owner))
+        keyword_formals = code.co_varnames[code.co_posonlyargcount:code.co_argcount + code.co_kwonlyargcount]
         watch = {}
         for name, key in explicit.items():
             ref = (key, ctx)
@@ -111,7 +124,9 @@ if "BR_ARG_PIN" in os.environ:
             else:
                 watch.setdefault(name, []).append((key, ctx))
         for name, (key, value) in defaults.items():
-            if name in explicit:
+            # A name matching a positional-only formal might have been accepted
+            # separately by **kwargs. Its default can still be observed.
+            if name in keyword_formals and (name in supplied or name in explicit):
                 continue
             if opaque or name in code.co_cellvars:
                 retain(key, ctx)
