@@ -21,6 +21,7 @@ DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data")
 sys.path.insert(0,str(HERE))
 import query_replay
 import query_phases
+import optimizer_contracts
 import parse_replay
 import flag_readers
 import identity_select
@@ -1909,6 +1910,7 @@ def select_tests(text):
         precise = query_phases.refine(selector, text, sel, attempted=attempted)
         sel = query_replay.refine(selector, text, sel if precise is None else precise,
                                   skip=attempted) | retained
+    sel = optimizer_contracts.refine(selector, text, sel)
     return import_impact.include(selector, text, sel), reasons
 
 
