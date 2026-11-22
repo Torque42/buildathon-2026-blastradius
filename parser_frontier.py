@@ -95,7 +95,7 @@ def exercise(eligible,reference=None,baseline=False,allow_full=False):
     stages_ok=set()
     tokens_seen=[]
     fingerprints={}
-    def stamp(phase,obj):
+    def stamp(phase,obj,k):
         # The installed wrappers are instrumentation. Inspect the original methods including patched overrides.
         Dialect.tokenize,Parser.parse=original_lex,original_parse
         try:
@@ -103,18 +103,18 @@ def exercise(eligible,reference=None,baseline=False,allow_full=False):
             values,unknown=binding_state.live(keys)
             if unknown:
                 raise ValueError(("Unresolved stage dependencies",phase))
-            fingerprints[phase]=values
+            fingerprints[(phase,k)]=values
             return binding_state.Fingerprints().hash(obj)
         finally:
             Dialect.tokenize,Parser.parse=lex,parse
     def matches(phase,obj,k):
         if phase not in eligible:
             return False
-        individual=stamp(phase,obj)
+        individual=stamp(phase,obj,k)
         instances[(phase,k)]=individual
         if baseline:
             return True
-        return fingerprints[phase]==reference[0].get(phase) and individual==reference[1].get((phase,k))
+        return fingerprints[(phase,k)]==reference[0].get((phase,k)) and individual==reference[1].get((phase,k))
     def lex(self,sql,*args,**kw):
         if type(sql) is not str or len(sql)<100_000:
             return original_lex(self,sql,*args,**kw)
