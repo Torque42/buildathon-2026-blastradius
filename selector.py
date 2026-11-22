@@ -38,6 +38,7 @@ import instruction_impact
 import parser_table_keys
 import collection_guard
 import branch_select
+import guard_edits
 import comment_layers
 import function_changes
 import consumer_select
@@ -1884,6 +1885,7 @@ def select_tests(text):
         sel = sel & equality
     if reasons == ["def-header"]:
         sel=constructor_inputs.refine(selector,text,sel)
+    sel = guard_edits.refine(selector, text, sel)
     parts = compound.pieces(selector, text)
     if parts and "recursive-comparison" not in reasons:
         attempted = set()
