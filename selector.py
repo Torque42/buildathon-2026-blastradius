@@ -51,6 +51,7 @@ import get_inputs
 import shortlist
 import workload_replay
 import first_divergence
+import batch_assertions
 import callback_consumers
 import slot_inputs
 import import_impact
@@ -1899,9 +1900,13 @@ def select_tests(text):
 
 def main():
     total = 0
+    entries = []
+    selector = sys.modules[__name__]
     for p in sorted((DATA / "commits").glob("*.patch")):
         text = ""
         _applied.clear()
+        shortlist.last_attempt.clear()
+        eligible = False
         try:
             text = p.read_text("utf-8", errors="replace")
             selector = sys.modules[__name__]
@@ -1917,9 +1922,14 @@ def main():
                 if "class-initialization" not in reasons:
                     sel = first_divergence.refine(selector, text, sel)
                 sel = workload_replay.refine(selector, text, sel)
+                eligible = "class-initialization" not in reasons
             sel = callback_consumers.include(selector, text, sel)
         except Exception as e:  # never crash: run everything
             sel, reasons = set(ALL), ["error:" + repr(e)[:80]]
+            eligible = False
+        entries.append([p, text, sel, reasons, eligible, set(shortlist.last_attempt)])
+    batch_assertions.refine(selector, entries)
+    for p, text, sel, reasons, _, _ in entries:
         workers = covered_schedule(text, sel)
         cost = worker_cost(workers)
         total += cost

@@ -14,6 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 PIN = ROOT / "cache/pinned"
+last_attempt = set()
 
 
 @lru_cache(maxsize=1)
@@ -159,6 +160,7 @@ def replay(edits, work, budget):
 
 
 def refine(selector, text, selected):
+    last_attempt.clear()
     if not selected or len(selected) > 48 or "sqlglot" in sys.modules:
         return selected
     if sum(selector.DUR[n] for n in selected) > 1800:
@@ -171,4 +173,5 @@ def refine(selector, text, selected):
         return selected
     work = [(n, selector.TEST_FILE_ID[n]) for n in sorted(selected, key=lambda n: (selector.DUR[n], n))]
     gain = selector.worker_cost(selector.split(selected)) / 1000
+    last_attempt.update(selected)
     return selected - replay(edits, work, min(1.2, gain * 0.43))
