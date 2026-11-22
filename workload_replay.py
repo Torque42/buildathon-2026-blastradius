@@ -58,7 +58,7 @@ def children(code):
 def body_edits(path, before, after):
     """Return potential first divergences in existing bodies, or an entire-module dependency."""
     shell, old_funcs, old_codes = function_changes.baseline(path, before)
-    other_shell, new_funcs = function_changes.skeleton(after)
+    other_shell, new_funcs = function_changes.changed_skeleton(path, before, after)
     if (shell != other_shell or old_funcs.keys() != new_funcs.keys()
             or None in old_funcs.values() or None in new_funcs.values()):
         return None

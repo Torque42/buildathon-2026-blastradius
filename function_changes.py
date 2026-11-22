@@ -1,6 +1,8 @@
 """Use cold instruction coverage for replacements and insertions inside existing functions."""
 import ast
 import hashlib
+import marshal
+from pathlib import Path
 import sys
 from functools import lru_cache
 from types import CodeType
@@ -8,9 +10,13 @@ from types import CodeType
 import instruction_impact as impact
 from replay_edit import preserve_scope
 
-def skeleton(source):
+SHAPES = Path(__file__).resolve().parent / "cache/function-shapes"
+
+
+def skeleton(source, previous=None, collect=None):
     tree=ast.parse(source)
     bodies={}
+    lines=source.splitlines(keepends=True)
     # Restrict edits to functions declared directly in module or class bodies.
     # Database initialization, decorators, signatures and class-definition
     # side effects consequently retain their original execution order.
@@ -27,17 +33,52 @@ def skeleton(source):
                         body=node.body[1:];node.body=node.body[:1]
                     else:
                         body=node.body;node.body=[]
-                    bodies[key]=(node.lineno,ast.dump(ast.Module(body=body,type_ignores=[])))
+                    if body:
+                        start = min([body[0].lineno] + [d.lineno for d in getattr(body[0], "decorator_list", ())])
+                        end = body[-1].end_lineno
+                        raw = "".join(lines[start-1:end]).encode()
+                        boundary = (body[0].col_offset, body[-1].end_col_offset)
+                        token = key, boundary, hashlib.sha256(raw).digest()
+                    else:
+                        token = key, (), b""
+                    value = previous.get(token) if previous else None
+                    if value is None:
+                        representation = ast.dump(ast.Module(body=body,type_ignores=[])).encode()
+                        value = hashlib.sha256(representation).digest()
+                    if collect is not None:
+                        collect[token] = value
+                    bodies[key]=(node.lineno,value)
     stage(tree.body,())
-    return ast.dump(tree),bodies
+    return hashlib.sha256(ast.dump(tree).encode()).digest(),bodies
+
+
+def make_baseline(path, source):
+    tokens = {}
+    shell, functions = skeleton(source, collect=tokens)
+    codes = {}
+    for _, code in impact.lineage(compile(source, path, "exec", dont_inherit=True)):
+        codes.setdefault(code.co_qualname, []).append(code)
+    return shell, functions, codes, tokens
+
+
+@lru_cache(32)
+def pinned(path, source):
+    if path.startswith("sqlglot/") and ".." not in Path(path).parts:
+        item = SHAPES / (path + ".marshal")
+        if item.is_file():
+            digest, version, result = marshal.loads(item.read_bytes())
+            if tuple(version) == sys.version_info[:2] and digest == hashlib.sha256(source.encode()).digest():
+                return result
+    return make_baseline(path, source)
 
 @lru_cache(18)
 def baseline(path,source):
-    shell,functions=skeleton(source)
-    codes={}
-    for _,c in impact.lineage(compile(source,path,"exec",dont_inherit=True)):
-        codes.setdefault(c.co_qualname,[]).append(c)
-    return shell,functions,codes
+    return pinned(path,source)[:3]
+
+
+@lru_cache(6)
+def changed_skeleton(path, before, after):
+    return skeleton(after, previous=pinned(path,before)[3])
 
 def members(code):
     yield code
@@ -54,7 +95,7 @@ def mask_changes(selector,patch):
     version,bits,known,files=impact.observations()
     if tuple(sys.version_info[:2])!=tuple(version) or path not in files:return
     base,funcs,codes=baseline(path,old)
-    shell,others=skeleton(new)
+    shell,others=changed_skeleton(path,old,new)
     if shell!=base or funcs.keys()!=others.keys():return
     targets=[k for k in funcs if funcs[k] and others[k] and funcs[k][1]!=others[k][1]]
     if not targets or len(targets)>10:return
