@@ -31,6 +31,7 @@ import equality_reads
 import predicate_select
 import condition_select
 import compound
+import cross_file
 import isolated_imports
 import validation_inputs
 import fixture_inputs
@@ -1911,6 +1912,7 @@ def select_tests(text):
         sel = query_replay.refine(selector, text, sel if precise is None else precise,
                                   skip=attempted) | retained
     sel = optimizer_contracts.refine(selector, text, sel)
+    sel = cross_file.refine(selector, text, sel)
     return import_impact.include(selector, text, sel), reasons
 
 
