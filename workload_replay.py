@@ -300,6 +300,11 @@ def executor_jobs(kind, details, opaque):
     phases = affected_stages(query_replay.IDS[kind], details, opaque, trace, kinds[kind] | kinds["init"])
     if phases is None or phases & kinds["init"]:
         return
+    return jobs_for_phases(kind, phases)
+
+
+def jobs_for_phases(kind, phases):
+    labels = query_phases.profile()[0]
     rows = defaultdict(set)
     while phases:
         bit = phases & -phases

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 import json
+import gzip
 from pathlib import Path
 import sys
 
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 
 @lru_cache(1)
 def timings():
-    return json.loads((ROOT / "maps/pytest-costs.json").read_bytes())
+    return json.loads(gzip.decompress((ROOT / "maps/pytest-costs.json.gz").read_bytes()))
 
 
 def patched_files(selector, text):

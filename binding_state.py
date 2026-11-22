@@ -4,6 +4,7 @@ import builtins
 import dis
 import enum
 import functools
+import _thread
 import gzip
 import hashlib
 import logging
@@ -11,6 +12,7 @@ import marshal
 import re
 import sys
 import types
+import typing
 from collections import defaultdict
 from pathlib import Path
 
@@ -49,9 +51,11 @@ def code_hash(code):
 
 
 class Fingerprints:
-    def __init__(self):
+    def __init__(self, original_codes=None):
         self.memo = {}
-        self.active = set()
+        self.active = {}
+        self.cycles = 0
+        self.original_codes = original_codes or {}
 
     def hash(self, value):
         if value is MISSING:
@@ -63,13 +67,19 @@ class Fingerprints:
         if key in self.memo:
             return self.memo[key][1]
         if key in self.active:
-            raise Unknown("cyclic instance")
-        self.active.add(key)
+            self.cycles += 1
+            distance = len(self.active) - self.active[key]
+            return digest([b"backreference", ident(kind), str(distance).encode()])
+        previous_cycles = self.cycles
+        self.active[key] = len(self.active)
         try:
             result = self.expand(value, kind)
         finally:
-            self.active.remove(key)
-        self.memo[key] = value, result
+            del self.active[key]
+        # A backreference is relative to the containing traversal. Cache only
+        # subtrees whose representation is independent of their calling path.
+        if self.cycles == previous_cycles:
+            self.memo[key] = value, result
         return result
 
     def expand(self, value, kind):
@@ -81,12 +91,41 @@ class Fingerprints:
             return digest([b"module", value.__name__.encode()])
         if kind is types.FunctionType:
             closure = [self.hash(c.cell_contents) for c in value.__closure__ or ()]
-            return digest([b"function", ident(value), code_hash(value.__code__), self.hash(value.__defaults__),
+            code = value.__code__
+            body = code_hash(code)
+            if self.original_codes:
+                body = self.original_codes.get((value.__module__, code.co_qualname, code.co_firstlineno, body), body)
+            return digest([b"function", ident(value), body, self.hash(value.__defaults__),
                            self.hash(value.__kwdefaults__), *closure])
         if kind in (staticmethod, classmethod):
             return digest([kind.__name__.encode(), self.hash(value.__func__)])
-        if kind is property:
-            return digest([b"property", self.hash(value.fget), self.hash(value.fset), self.hash(value.fdel)])
+        if kind in (property, enum.property):
+            return digest([ident(kind), self.hash(value.fget), self.hash(value.fset),
+                           self.hash(value.fdel), self.hash(getattr(value, "__doc__", None))])
+        if kind is types.GenericAlias:
+            return digest([b"generic", self.hash(value.__origin__), self.hash(value.__args__)])
+        if kind.__module__ == "typing" and typing.get_origin(value) is not None:
+            return digest([ident(kind), self.hash(getattr(value, "_name", None)),
+                           self.hash(typing.get_origin(value)), self.hash(typing.get_args(value))])
+        if isinstance(value, typing.TypeVar):
+            return digest([b"typevar", self.hash(value.__name__), self.hash(value.__bound__),
+                           self.hash(value.__constraints__), self.hash(value.__covariant__),
+                           self.hash(value.__contravariant__),
+                           self.hash(getattr(value, "__infer_variance__", False)),
+                           self.hash(getattr(value, "__default__", None))])
+        if value is getattr(typing, "NoDefault", MISSING):
+            return b"typing.NoDefault"
+        if isinstance(value, typing.ForwardRef):
+            return digest([b"forward", self.hash(value.__forward_arg__),
+                           self.hash(getattr(value, "__forward_module__", None))])
+        if kind.__module__ in ("_collections", "collections") and kind.__name__ == "_tuplegetter":
+            return digest([b"tuplegetter", self.hash(value.__reduce__()[1])])
+        if kind in (type({}.keys()), type({}.values()), type({}.items())):
+            return digest([kind.__name__.encode(), *(self.hash(v) for v in value)])
+        if kind is _thread.RLock:
+            if "owner=0 count=0" not in repr(value):
+                raise Unknown("held import lock")
+            return b"unheld reentrant lock"
         if kind in (dict, defaultdict, types.MappingProxyType):
             # Iteration order is visible to production code.
             pairs = [digest([self.hash(k), self.hash(v)]) for k, v in value.items()]
