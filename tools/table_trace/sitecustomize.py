@@ -126,10 +126,20 @@ def single_copy(node,parents):
             return False
         if [table.key.id,table.value.id]!=[n.id for n in keys]:
             return False
-        if any(not isinstance(n,ast.Compare) or not isinstance(n.left,ast.Name) or n.left.id!=keys[0].id
-               or len(n.ops)!=1 or not isinstance(n.ops[0],(ast.Eq,ast.NotEq)) or len(n.comparators)!=1
-               or not isinstance(n.comparators[0],ast.Constant) or type(n.comparators[0].value) is not str
-               for n in comp.ifs):
+        def literal_key(node):
+            return ((isinstance(node,ast.Constant) and type(node.value) is str) or
+                    (isinstance(node,ast.Attribute) and isinstance(node.value,ast.Name) and
+                     node.value.id in {"exp","TokenType","DType"} and not node.attr.startswith("_")))
+        def key_filter(n):
+            if (not isinstance(n,ast.Compare) or not isinstance(n.left,ast.Name)
+                    or n.left.id!=keys[0].id or len(n.ops)!=1 or len(n.comparators)!=1):
+                return False
+            rhs=n.comparators[0]
+            if isinstance(n.ops[0],(ast.Eq,ast.NotEq)):
+                return literal_key(rhs)
+            return (dispatch_mode and isinstance(n.ops[0],(ast.In,ast.NotIn))
+                    and isinstance(rhs,(ast.Tuple,ast.List,ast.Set)) and all(literal_key(k) for k in rhs.elts))
+        if not all(key_filter(n) for n in comp.ifs):
             return False
         spread=table
         outer=parents.get(table)
@@ -187,7 +197,7 @@ class Loader(importlib.machinery.SourceFileLoader):
                     g=parents.get(p)
                     if isinstance(p,ast.Subscript) and p.value is node:
                         key=p.slice
-                    elif isinstance(p,ast.Attribute) and p.attr=="get" and isinstance(g,ast.Call) and g.func is p and g.args:
+                    elif isinstance(p,ast.Attribute) and (p.attr=="get" or dispatch_mode and p.attr in ("pop","setdefault")) and isinstance(g,ast.Call) and g.func is p and g.args:
                         key=g.args[0]
                     elif isinstance(p,ast.Compare) and len(p.ops)==1 and p.comparators[0] is node and isinstance(p.ops[0],(ast.In,ast.NotIn)):
                         # The left side has already been transformed. Re-evaluate only the plain owner name.
