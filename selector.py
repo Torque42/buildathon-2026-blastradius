@@ -1780,6 +1780,8 @@ def covered_schedule(text, selected):
 
 def select_tests(text):
     selector = sys.modules[__name__]
+    if import_impact.changes_class_hook(selector, text):
+        return set(ALL), ["class-initialization"]
     # A complete small reader set can be scheduled immediately. Larger reader
     # sets still benefit from the existing per-query and instruction refinements.
     classes = class_comparisons.match(selector, text)

@@ -1,4 +1,5 @@
 """Preserve tests affected by cold import failures and shared expression schemas."""
+import ast
 from functools import lru_cache
 import importlib
 import json
@@ -18,6 +19,48 @@ from replay_edit import Overlay
 @lru_cache(maxsize=1)
 def profile():
     return marshal.loads((ROOT/"cache/import-impacts").read_bytes())
+
+
+@lru_cache(96)
+def class_hooks(selector, path):
+    source = selector.SRC[path]
+    if "__init_subclass__" not in source and "__new__" not in source and "metaclass=" not in source:
+        return ()
+    tree = selector.source_tree(path)
+    classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+    metaclasses = {"type", "ABCMeta", "EnumMeta", "EnumType"}
+    metaclasses.update(kw.value.id for cls in classes for kw in cls.keywords
+                       if kw.arg == "metaclass" and isinstance(kw.value, ast.Name))
+    # Include project-defined descendants of the recognized metaclasses.
+    while True:
+        derived = {cls.name for cls in classes if any(
+            (isinstance(base, ast.Name) and base.id in metaclasses) or
+            (isinstance(base, ast.Attribute) and base.attr in metaclasses) for base in cls.bases)}
+        if derived <= metaclasses:
+            break
+        metaclasses.update(derived)
+    return tuple((min([method.lineno] + [d.lineno for d in method.decorator_list]), method.end_lineno)
+                 for cls in classes for method in cls.body if isinstance(method, ast.FunctionDef)
+                 and (method.name == "__init_subclass__" or
+                      (cls.name in metaclasses and method.name in ("__new__", "__init__", "__prepare__"))))
+
+
+def changes_class_hook(selector, text):
+    # These methods can install lasting state before pytest starts attributing
+    # execution to individual tests. Successful imports can still change behavior.
+    for patch in selector.parse_patch(text):
+        path = patch["old"]
+        if not path or path != patch["new"] or not path.startswith("sqlglot/") or path not in selector.SRC:
+            continue
+        hooks = class_hooks(selector, path)
+        if not hooks:
+            continue
+        original = selector.SRC[path]
+        updated, removed, added = selector.apply(original, patch["hunks"])
+        if any(start <= line <= end for line in (*removed, *added) for start, end in hooks):
+            if ast.dump(selector.source_tree(path)) != ast.dump(ast.parse(updated)):
+                return True
+    return False
 
 
 def schema_readers(selector, classes):
