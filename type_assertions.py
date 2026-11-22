@@ -2,13 +2,13 @@
 import ast
 from functools import lru_cache
 import gzip
-import hashlib
 import marshal
 import os
 from pathlib import Path
 import signal
 import sys
 
+import import_impact
 import instruction_impact
 import workload_replay
 
@@ -27,9 +27,29 @@ def affected(selector,text):
     if not prepared:
         return
     edits,details,opaque,fixtures=prepared
-    if fixtures or opaque or selector.NUM[NODE] in workload_replay.file_readers(selector,edits):
+    if fixtures or selector.NUM[NODE] in workload_replay.file_readers(selector,edits):
         return
     version,rows,schema,masks,seen=capture()
+    if opaque:
+        # Full replay imports patched dependencies and computes both sides of
+        # every original assertion. Changes to Python import hooks abstain.
+        from namespace_proof import declarations_only,DYNAMIC
+        import re
+        words=set(re.findall(r"\w+"," ".join(line for patch in selector.parse_patch(text)
+                  for h in patch["hunks"] for line in h["lines"] if line.startswith(("+","-")))))
+        if (words&(DYNAMIC|workload_replay.PERSISTENT_OPERATIONS)
+                or not all(path.startswith(("sqlglot/typing/","sqlglot/generators/","sqlglot/parsers/"))
+                           and declarations_only(selector.SRC[path],edits[path]) for path in opaque)):
+            return
+        return edits,(1<<len(rows))-1
+    # If changed code can run while a dialect is being imported, the first
+    # query can alter the state of later queries that use that cached dialect.
+    for patch in selector.parse_patch(text):
+        path=patch["old"]
+        imports=import_impact.profile()[0].get(path,{})
+        _,removed,_=selector.apply(selector.SRC[path],patch["hunks"])
+        if any(n in imports for n in removed):
+            return edits,(1<<len(rows))-1
     cv,numbers,known,cold=instruction_impact.observations()
     if tuple(version)!=tuple(cv) or tuple(cv)!=sys.version_info[:2] or not numbers.get(NODE,0)&known:
         return
@@ -70,10 +90,21 @@ def run(edits,bits):
     functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in expected]
     if {n.name for n in functions}!=expected:
         return False
-    bindings=dict(parse_one=parse_one,exp=exp,annotate_types=annotate_types)
-    exec(compile(ast.Module(body=functions,type_ignores=[]),str(pin/"tests/test_optimizer.py"),"exec"),bindings)
+    globals_={"unittest":unittest,"__name__":"_test_type_assertions"}
+    original_class=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=="TestOptimizer")
+    methods=[n for n in original_class.body if isinstance(n,ast.FunctionDef) and n.name in ("setUp","test_annotate_funcs")]
+    imports=[n for n in tree.body if isinstance(n,ast.ImportFrom) and
+             (n.module or "").startswith(("sqlglot","tests.helpers"))]
+    bindings={"exp":exp,"sqlglot":sqlglot,"unittest":unittest,**globals_}
+    exec(compile(ast.Module(body=imports+functions+methods,type_ignores=[]),str(pin/"tests/test_optimizer.py"),"exec"),bindings)
     sqlglot.schema=MappingSchema()
     _,rows,schema,_,_=capture()
+    test_type=type("TestOptimizer",(unittest.TestCase,),{n:bindings[n] for n in ("setUp","test_annotate_funcs")})
+    if bits==(1<<len(rows))-1:
+        result=unittest.TestResult()
+        unittest.TestSuite([test_type("test_annotate_funcs")]).run(result)
+        return result.testsRun==1 and result.wasSuccessful() and not result.skipped
+    test_type("test_annotate_funcs").setUp()
     actual=[("SELECT "+sql+" FROM tbl",expected_type,dialect)
             for meta,sql,expected_type in load_sql_fixture_pairs("optimizer/annotate_functions.sql")
             for dialect in (meta.get("dialect") or "").split(", ")]
