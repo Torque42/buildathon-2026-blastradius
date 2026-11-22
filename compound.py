@@ -14,8 +14,10 @@ def first_readers(selector, text, selected):
     import collection_guard
     import fixture_inputs
     import flag_readers
+    import get_inputs
     import import_impact
     import instruction_impact
+    import lexical_inputs
     import slot_inputs
     import validation_inputs
 
@@ -23,6 +25,8 @@ def first_readers(selector, text, selected):
     if not selected or not parts:
         return selected
     union = set()
+    direct = []
+    lookups = []
     seen = set()
     for piece in parts:
         patches = selector.parse_patch(piece)
@@ -35,41 +39,57 @@ def first_readers(selector, text, selected):
         seen.add(path)
         opens = selector.tests_of(selector.M["opens"].get(path))
         opens.update(n for n, (files, _) in selector.EXTRA.items() if path in files)
+        lookup = None
         if path.startswith("tests/fixtures/") and path.endswith(".sql"):
             rows = fixture_inputs.profiles()[0]["readers"].get(path)
             if rows is None:
                 return selected
             contexts = set().union(*(set(ids) for ids in rows.values()))
             keep = fixture_inputs.expand(selector, contexts) | selector.analyze(piece)[0] | opens
+            exposed = keep
         elif path in selector.SRC and path.startswith("sqlglot/"):
             if path in selector.profile()["source_reads"]:
                 return selected
             keep = argument_reads.match(selector, piece)
             if keep is None:
                 keep = slot_inputs.refine(selector, piece, selector.ALL)
+            exposed = keep
             if keep is selector.ALL:
                 keep = validation_inputs.refine(selector, piece, selector.ALL)
             if keep is selector.ALL:
                 keep = flag_readers.refine(selector, piece, selector.ALL)
             if keep is selector.ALL:
                 impact, _ = instruction_impact.single_impact(selector, piece)
-                if impact is None:
-                    return selected
                 # Import-time reads may feed shared module state before a test
                 # starts. Keep the wider selection when the body is reached then.
-                body = impact[2]
-                cold = collection_guard.inputs()[1].get(path, 0)
-                lines = import_impact.profile()[0].get(path, {})
-                if body & cold or any(body & (1 << line) for line in lines):
-                    return selected
-                keep = instruction_impact.refine(selector, piece, selector.ALL)
-            keep = import_impact.include(selector, piece, keep) | opens
+                if impact is not None:
+                    body = impact[2]
+                    cold = collection_guard.inputs()[1].get(path, 0)
+                    lines = import_impact.profile()[0].get(path, {})
+                    if not (body & cold or any(body & (1 << line) for line in lines)):
+                        keep = instruction_impact.refine(selector, piece, selector.ALL)
+                        exposed = keep
+            lookup = lexical_inputs.refine(selector, piece, selector.ALL)
+            if lookup is selector.ALL:
+                lookup = get_inputs.refine(selector, piece, selector.ALL)
+            extras = import_impact.include(selector, piece, set()) | opens
+            keep = keep | extras
+            exposed = exposed | extras
+            if lookup is not selector.ALL:
+                lookup = lookup | extras
         else:
             return selected
         union.update(keep)
-        if selected <= union:
-            return selected
-    return selected & union
+        direct.append(exposed)
+        lookups.append(lookup)
+    result = selected & union
+    # Only one lookup may use equality of its observed result. Every other
+    # change must be unexecuted, unread, or in a fixture that was never opened.
+    # Combining two result-equivalence checks could hide an interaction.
+    for i, lookup in enumerate(lookups):
+        if lookup is not None and lookup is not selector.ALL:
+            result &= lookup.union(*(others for j, others in enumerate(direct) if j != i))
+    return result
 
 def select(selector,text,default):
     from replay_edit import possible_edit,preserve
