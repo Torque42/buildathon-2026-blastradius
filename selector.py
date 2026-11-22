@@ -48,6 +48,7 @@ import default_inputs
 import constructor_inputs
 import lexical_inputs
 import get_inputs
+import shortlist
 import slot_inputs
 import import_impact
 import replay_edit
@@ -1863,6 +1864,8 @@ def main():
             selector = sys.modules[__name__]
             text, comment_readers = comment_layers.simplify(selector, text)
             sel, reasons = select_tests(text)
+            if not comment_readers:
+                sel = shortlist.refine(selector, text, sel)
             sel = sel | comment_readers
             if collection_guard.failed(selector, text, sel):
                 sel = collection_guard.include_failed(selector, text, sel)
